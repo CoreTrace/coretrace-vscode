@@ -1,0 +1,1 @@
+# coretrace-vscode
