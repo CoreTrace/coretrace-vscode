@@ -1,0 +1,15 @@
+body {
+    background-color: transparent;
+}
+
+a {
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+textarea {
+    font-family: var(--vscode-font-family);
+}
