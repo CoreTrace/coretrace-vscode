@@ -8,8 +8,8 @@ node_modules/
 package-lock.json
 
 # Binaries (ne pas versionner les binaires compilés)
-ctrace
-coretrace
+/ctrace
+/coretrace
 *.vsix
 
 # Logs & fichiers temporaires
