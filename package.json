@@ -1,0 +1,52 @@
+{
+  "name": "ctrace-audit",
+  "displayName": "Ctrace Audit",
+  "description": "Integration for Ctrace CLI Audit Tool",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:ctrace-audit-view"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ctrace-sidebar-view",
+          "title": "Ctrace Audit",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "ctrace-sidebar-view": [
+        {
+          "type": "webview",
+          "id": "ctrace-audit-view",
+          "name": "Audit Dashboard"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ctrace.runAnalysis",
+        "title": "Run Analysis"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.1.3"
+  }
+}

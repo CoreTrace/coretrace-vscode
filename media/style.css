@@ -1,0 +1,389 @@
+/* ── Reset & Base ──────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background: transparent;
+    padding: 0;
+    overflow-x: hidden;
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 12px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 20px 0 16px;
+    border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.header-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, #2563eb18, #7c3aed18);
+    border: 1px solid #2563eb33;
+    border-radius: 50%;
+    color: #60a5fa;
+}
+
+.header-icon svg {
+    width: 20px;
+    height: 20px;
+    animation: pulse-shield 3s ease-in-out infinite;
+}
+
+@keyframes pulse-shield {
+    0%, 100% { opacity: 1;   transform: scale(1); }
+    50%       { opacity: 0.75; transform: scale(0.9); }
+}
+
+.header-title {
+    font-size: 0.82em;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+/* ── File pill ─────────────────────────────────────────────────────────────── */
+.file-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    font-size: 0.78em;
+    color: var(--vscode-descriptionForeground);
+    overflow: hidden;
+}
+
+.file-pill svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    color: #60a5fa;
+}
+
+#file-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Run button ────────────────────────────────────────────────────────────── */
+.btn-run {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 11px 16px;
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.92em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.15s;
+    letter-spacing: 0.02em;
+}
+
+.btn-run:hover  { opacity: 0.88; transform: translateY(-1px); }
+.btn-run:active { transform: translateY(0); opacity: 1; }
+
+.btn-run:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-run svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* Icon swap via CSS — no JS icon recreation needed */
+.btn-run .icon-running { display: none; }
+.btn-run .icon-idle    { display: block; }
+
+.btn-run.running .icon-idle    { display: none; }
+.btn-run.running .icon-running { display: block; animation: spin 0.9s linear infinite; }
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* ── Advanced flags ────────────────────────────────────────────────────────── */
+.advanced-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.btn-advanced {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 10px;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-radius 0.15s;
+}
+
+.btn-advanced:hover {
+    background: var(--vscode-list-hoverBackground);
+    color: var(--vscode-foreground);
+}
+
+.btn-advanced.open {
+    border-radius: 6px 6px 0 0;
+    border-bottom-color: transparent;
+    color: var(--vscode-foreground);
+}
+
+.btn-advanced svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.btn-advanced span { flex: 1; text-align: left; }
+
+#chevron {
+    transition: transform 0.25s ease;
+    transform: rotate(-90deg);
+}
+
+#chevron.rotated { transform: rotate(0deg); }
+
+.advanced-panel {
+    padding: 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow: hidden;
+    transition: max-height 0.25s ease, padding 0.25s ease;
+    max-height: 120px;
+}
+
+.advanced-hidden {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    border-width: 0 !important;
+}
+
+.advanced-panel label {
+    font-size: 0.75em;
+    color: var(--vscode-descriptionForeground);
+}
+
+.advanced-panel input[type='text'] {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    font-size: 0.82em;
+    font-family: var(--vscode-editor-font-family);
+}
+
+.advanced-panel input[type='text']:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    border-color: var(--vscode-focusBorder);
+}
+
+/* ── Divider ───────────────────────────────────────────────────────────────── */
+.divider {
+    height: 1px;
+    background: var(--vscode-widget-border);
+    margin: 2px 0;
+}
+
+/* ── Results ───────────────────────────────────────────────────────────────── */
+.results-hidden { display: none; }
+
+.results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.results-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--vscode-editor-foreground);
+}
+
+.results-title svg {
+    width: 14px;
+    height: 14px;
+    color: #f97316;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    background: #2563eb;
+    color: #fff;
+    border-radius: 999px;
+    font-size: 0.72em;
+    font-weight: 700;
+}
+
+.badge.zero { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+
+#vuln-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* vuln item */
+.vuln-item {
+    padding: 9px 10px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    animation: slide-in 0.2s ease both;
+}
+
+.vuln-item:hover {
+    background: var(--vscode-list-hoverBackground);
+    border-color: #2563eb66;
+    transform: translateX(2px);
+}
+
+@keyframes slide-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.vuln-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.vuln-rule {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.78em;
+    font-weight: 700;
+    color: var(--vscode-textLink-foreground);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vuln-rule svg {
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+}
+
+.vuln-sev {
+    font-size: 0.68em;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.sev-error   { background: #ef444422; color: #f87171; border: 1px solid #ef444444; }
+.sev-warning { background: #f9731622; color: #fb923c; border: 1px solid #f9731644; }
+.sev-note    { background: #3b82f622; color: #60a5fa; border: 1px solid #3b82f644; }
+
+.vuln-loc {
+    font-size: 0.73em;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.vuln-loc svg { width: 10px; height: 10px; flex-shrink: 0; }
+
+.vuln-msg {
+    font-size: 0.78em;
+    color: var(--vscode-foreground);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* info item (no results) */
+.info-item {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px;
+    font-size: 0.82em;
+    color: var(--vscode-descriptionForeground);
+    justify-content: center;
+}
+
+/* ── Empty state ───────────────────────────────────────────────────────────── */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 24px 0 8px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.8em;
+}
+
+.empty-state svg {
+    width: 28px;
+    height: 28px;
+    opacity: 0.3;
+}

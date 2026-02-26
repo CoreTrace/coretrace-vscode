@@ -1,0 +1,25 @@
+# Compiled output
+out/
+
+# Dependencies
+node_modules/
+
+# Lock file (optionnel selon les préférences d'équipe)
+package-lock.json
+
+# Binaries (ne pas versionner les binaires compilés)
+/ctrace
+/coretrace
+*.vsix
+
+# Logs & fichiers temporaires
+process.log
+ctrace-report.txt
+ctrace.out
+
+# Rapport SARIF racine généré à la volée
+ccoretrace-sarif-tscancode.json
+
+# OS
+.DS_Store
+Thumbs.db
