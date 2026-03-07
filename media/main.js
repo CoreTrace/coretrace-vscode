@@ -56,6 +56,11 @@
             case 'analysis-result':
                 handleAnalysisResult(msg.data);
                 break;
+            case 'analysis-error':
+                // Ensures the button is never stuck in loading state when
+                // the analysis fails, crashes, or produces no parseable output.
+                setRunning(false);
+                break;
             case 'active-file':
                 if (fileLabel) {
                     fileLabel.textContent = msg.name || 'No file open';

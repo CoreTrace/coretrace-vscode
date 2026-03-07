@@ -19,6 +19,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
+    // ── Active file tracking ───────────────────────────────────────────────
+    const postActiveFile = (editor: vscode.TextEditor | undefined) => {
+      const name = editor?.document.uri.path.split('/').pop() ?? null;
+      this._view?.webview.postMessage({ type: 'active-file', name });
+    };
+    // Push current file immediately when the sidebar first resolves
+    postActiveFile(vscode.window.activeTextEditor);
+    // Keep it updated whenever the user switches tabs
+    const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
+    webviewView.onDidDispose(() => activeEditorListener.dispose());
+
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "onInfo": {
@@ -36,7 +47,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "execute-command": {
-            // Execute the VS Code command associated with the button, passing the params
+            // Only allow explicitly whitelisted commands to prevent arbitrary command execution
+            const allowedCommands = ['ctrace.runAnalysis'];
+            if (!allowedCommands.includes(data.command)) {
+                console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
+                return;
+            }
             vscode.commands.executeCommand(data.command, data.params);
             break;
         }
@@ -96,12 +112,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private _getHtmlForWebview(webview: vscode.Webview) {
-    const styleResetUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "media", "reset.css")
-    );
-    const styleVSCodeUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "media", "vscode.css")
-    );
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, "media", "main.js")
     );
@@ -121,8 +131,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				<meta charset="UTF-8">
 				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
-				<link href="${styleResetUri}" rel="stylesheet">
-				<link href="${styleVSCodeUri}" rel="stylesheet">
                 <link href="${styleMainUri}" rel="stylesheet">
 				<title>Ctrace Audit</title>
 			</head>

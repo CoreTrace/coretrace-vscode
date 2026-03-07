@@ -36,10 +36,9 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const filePath      = editor.document.uri.fsPath;
-            const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+            const filePath = editor.document.uri.fsPath;
 
-            if (!workspaceRoot) {
+            if (!vscode.workspace.workspaceFolders?.length) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 return;
             }
@@ -53,9 +52,18 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            // Build command
-            const { command, tempFiles } = buildCommand(ctracePath, filePath, params);
-            console.log('[ctrace] Running:', command);
+            // Build command (also validates params — throws on unsafe input)
+            let built: ReturnType<typeof buildCommand>;
+            try {
+                built = buildCommand(ctracePath, filePath, params);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Invalid analysis parameters: ${e}`);
+                sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                return;
+            }
+            const { tempFiles } = built;
+            const commandLabel = built.command ?? `${built.file} ${built.args?.join(' ')}`;
+            console.log('[ctrace] Running:', commandLabel);
 
             // ctrace resolves ./tscancode, ./ikos etc. relative to its own directory
             const extensionPath = context.extensionUri.fsPath;
@@ -67,43 +75,63 @@ export function activate(context: vscode.ExtensionContext) {
             // Execute with progress notification
             output.show(true); // show without stealing focus
             await vscode.window.withProgress(
-                { location: vscode.ProgressLocation.Notification, title: 'Running Ctrace Analysis…', cancellable: false },
-                async () => {
-                    const { stdout, stderr, exitCode } = await runCommand(command, extensionPath);
+                { location: vscode.ProgressLocation.Notification, title: 'Running Ctrace Analysis…', cancellable: true },
+                async (_progress, token) => {
+                    let stdout = '', stderr = '';
+                    let exitCode: number | null = null;
+                    try {
+                        const result = await runCommand(built, extensionPath, token);
+                        ({ stdout, stderr, exitCode } = result);
 
-                    // Display raw output in the Output channel
-                    output.clear();
-                    output.appendLine(`$ ${command}`);
-                    output.appendLine('');
-                    if (stdout) { output.appendLine(stdout); }
-                    if (stderr) { output.appendLine('[stderr] ' + stderr); }
-                    output.appendLine(`[exit code: ${exitCode ?? 0}]`);
+                        if (result.killed) {
+                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            if (!token.isCancellationRequested) {
+                                vscode.window.showErrorMessage('Ctrace analysis timed out (2 min). Consider simplifying the entry points or checking for infinite loops.');
+                                output.appendLine('[timed out]');
+                            }
+                            return;
+                        }
 
-                    // Always clean up temp files
-                    tempFiles.forEach(tryDelete);
+                        // Display raw output in the Output channel
+                        output.clear();
+                        output.appendLine(`$ ${commandLabel}`);
+                        output.appendLine('');
+                        if (stdout) { output.appendLine(stdout); }
+                        if (stderr) { output.appendLine('[stderr] ' + stderr); }
+                        output.appendLine(`[exit code: ${exitCode ?? 0}]`);
 
-                    // Parse results
-                    const sarif = parseSarifOutput(stdout, reportPath);
+                        // Parse results
+                        const sarif = parseSarifOutput(stdout, reportPath);
 
-                    if (!sarif) {
-                        handleNoResults(stdout, stderr, exitCode);
-                        return;
+                        if (!sarif) {
+                            handleNoResults(stdout, stderr, exitCode);
+                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            return;
+                        }
+
+                        const total = countResults(sarif);
+
+                        updateDiagnostics(sarif, diagnosticCollection, filePath);
+
+                        sidebarProvider._view?.webview.postMessage({
+                            type: 'analysis-result',
+                            data: sarif,
+                        });
+
+                        vscode.window.showInformationMessage(
+                            total > 0
+                                ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found.`
+                                : 'Analysis complete — no issues found.'
+                        );
+                    } catch (e) {
+                        // Unexpected error (e.g. execFile failure, FS error) — unblock the button.
+                        sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                        vscode.window.showErrorMessage(`Ctrace analysis failed unexpectedly: ${e}`);
+                        output.appendLine(`[error] ${e}`);
+                    } finally {
+                        // Always clean up temp files, even on crash/throw.
+                        tempFiles.forEach(tryDelete);
                     }
-
-                    const total = countResults(sarif);
-
-                    updateDiagnostics(sarif, diagnosticCollection, filePath);
-
-                    sidebarProvider._view?.webview.postMessage({
-                        type: 'analysis-result',
-                        data: sarif,
-                    });
-
-                    vscode.window.showInformationMessage(
-                        total > 0
-                            ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found.`
-                            : 'Analysis complete — no issues found.'
-                    );
                 }
             );
         })
