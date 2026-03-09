@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import type { SarifLog, StackAnalyzerOutput, StackAnalyzerDiagnostic } from '../types/sarif';
 
 /**
  * Attempts to extract a parsed SARIF object from the available sources:
@@ -8,20 +9,23 @@ import * as fs from 'fs';
  *
  * Returns the parsed SARIF object, or null if nothing could be extracted.
  */
-export function parseSarifOutput(stdout: string, reportFilePath?: string): any | null {
+export async function parseSarifOutput(stdout: string, reportFilePath?: string): Promise<SarifLog | null> {
     // Strip ANSI escape codes produced by ctrace's coloured output
     const cleanedStdout = stripAnsi(stdout);
-    let sarif: any = null;
+    let sarif: SarifLog | null = null;
 
     // 1 ─ Report file (preferred)
-    if (reportFilePath && fs.existsSync(reportFilePath)) {
+    if (reportFilePath) {
         try {
-            const content = fs.readFileSync(reportFilePath, 'utf-8').trim();
+            const content = (await fs.promises.readFile(reportFilePath, 'utf-8')).trim();
             if (content) {
-                sarif = JSON.parse(content);
+                sarif = JSON.parse(content) as SarifLog;
             }
-        } catch (e) {
-            console.error('[SarifParser] Failed to parse report file:', e);
+        } catch (e: unknown) {
+            // ENOENT is normal when ctrace didn’t write a report — suppress it.
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+                console.error('[SarifParser] Failed to parse report file:', e);
+            }
         }
     }
 
@@ -30,7 +34,7 @@ export function parseSarifOutput(stdout: string, reportFilePath?: string): any |
         const sarifBlock = extractLastJsonBlock(cleanedStdout, '"$schema"');
         if (sarifBlock) {
             try {
-                sarif = JSON.parse(sarifBlock);
+                sarif = JSON.parse(sarifBlock) as SarifLog;
             } catch (e) {
                 console.error('[SarifParser] Failed to parse SARIF block from stdout:', e);
             }
@@ -39,12 +43,12 @@ export function parseSarifOutput(stdout: string, reportFilePath?: string): any |
 
     // 3 ─ Raw stack-analyzer JSON
     // Try even when a SARIF was found but has 0 results (ctrace outputs both).
-    const hasResults = sarif?.runs?.some((r: any) => r.results?.length > 0);
+    const hasResults = sarif?.runs?.some(r => (r.results?.length ?? 0) > 0);
     if (!hasResults) {
         const stackBlock = extractStackAnalyzerBlock(cleanedStdout);
         if (stackBlock) {
             try {
-                const obj = JSON.parse(stackBlock);
+                const obj = JSON.parse(stackBlock) as StackAnalyzerOutput;
                 if (obj.diagnostics && Array.isArray(obj.diagnostics) && obj.diagnostics.length > 0) {
                     return convertStackAnalyzerToSarif(obj);
                 }
@@ -58,9 +62,9 @@ export function parseSarifOutput(stdout: string, reportFilePath?: string): any |
 }
 
 /** Returns the total number of results across all SARIF runs. */
-export function countResults(sarif: any): number {
+export function countResults(sarif: SarifLog | null): number {
     if (!sarif?.runs) { return 0; }
-    return sarif.runs.reduce((sum: number, r: any) => sum + (r.results?.length ?? 0), 0);
+    return sarif.runs.reduce((sum, r) => sum + (r.results?.length ?? 0), 0);
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
@@ -100,20 +104,49 @@ function extractStackAnalyzerBlock(text: string): string | null {
     return matchBraces(text, rootBrace);
 }
 
+/**
+ * Finds the closing brace of a JSON object that starts at `startIndex`,
+ * correctly skipping brace characters that appear inside JSON string literals
+ * (e.g. `"value": "}"` must not decrement the balance counter).
+ * Validates the extracted substring with `JSON.parse` before returning it.
+ */
 function matchBraces(text: string, startIndex: number): string | null {
+    let i = startIndex;
     let balance = 0;
-    for (let i = startIndex; i < text.length; i++) {
-        if (text[i] === '{') { balance++; }
-        else if (text[i] === '}') {
-            balance--;
-            if (balance === 0) { return text.substring(startIndex, i + 1); }
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '"') {
+            // Skip over the entire string literal so braces inside it are ignored.
+            i++;
+            while (i < text.length) {
+                if (text[i] === '\\') { i += 2; continue; } // escaped character
+                if (text[i] === '"') { i++; break; }         // end of string
+                i++;
+            }
+            continue;
         }
+        if (ch === '{') { balance++; }
+        else if (ch === '}') {
+            balance--;
+            if (balance === 0) {
+                const candidate = text.substring(startIndex, i + 1);
+                try {
+                    JSON.parse(candidate);
+                    return candidate;
+                } catch {
+                    // Extracted slice is not valid JSON — give up rather than
+                    // returning corrupt data to the caller.
+                    return null;
+                }
+            }
+        }
+        i++;
     }
     return null;
 }
 
-function convertStackAnalyzerToSarif(stackObj: any): any {
-    const results = (stackObj.diagnostics ?? []).map((d: any) => ({
+function convertStackAnalyzerToSarif(stackObj: StackAnalyzerOutput): SarifLog {
+    const results = (stackObj.diagnostics ?? []).map((d: StackAnalyzerDiagnostic) => ({
         ruleId: d.ruleId ?? 'StackIssue',
         level: severityToSarifLevel(d.severity),
         message: { text: (d.details?.message ?? 'Unknown stack issue').trim() },
@@ -136,7 +169,7 @@ function convertStackAnalyzerToSarif(stackObj: any): any {
     };
 }
 
-function severityToSarifLevel(severity: string | undefined): string {
+function severityToSarifLevel(severity: string | undefined): 'error' | 'warning' | 'note' | 'none' {
     switch ((severity ?? '').toUpperCase()) {
         case 'ERROR':   return 'error';
         case 'WARNING': return 'warning';

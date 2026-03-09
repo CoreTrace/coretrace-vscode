@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
-import { SidebarProvider }    from './SidebarProvider';
+import { SidebarProvider, type HostMessage } from './SidebarProvider';
 import { locateBinary }       from './ctrace/BinaryLocator';
 import { buildCommand }       from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics }  from './ctrace/DiagnosticsManager';
+
+// Parameters passed by the webview when triggering an analysis run.
+export interface AnalysisParams {
+    customParams?: string;
+}
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -17,6 +23,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     const sidebarProvider = new SidebarProvider(context.extensionUri);
+    // Register the provider itself as a Disposable so its view-scoped
+    // subscriptions are guaranteed to be released on extension deactivation,
+    // even if `onDidDispose` is never fired by VS Code.
+    context.subscriptions.push(sidebarProvider);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('ctrace-audit-view', sidebarProvider)
     );
@@ -26,13 +36,24 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(diagnosticCollection);
 
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
+    // Guard against concurrent invocations (e.g. a second postMessage arriving
+    // while the first analysis is still running, or a keyboard shortcut being
+    // triggered while the sidebar button is already spinning).
+    let isRunning = false;
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
+        vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
+            if (isRunning) {
+                vscode.window.showWarningMessage('An analysis is already in progress.');
+                return;
+            }
+            isRunning = true;
             const params = resolveParams(arg);
 
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active file to analyse.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                isRunning = false;
                 return;
             }
 
@@ -40,25 +61,32 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (!vscode.workspace.workspaceFolders?.length) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                isRunning = false;
                 return;
             }
 
             // Locate binary
-            const ctracePath = locateBinary(context.extensionUri.fsPath);
+            const ctracePath = await locateBinary(context.extensionUri.fsPath);
             if (!ctracePath) {
                 vscode.window.showErrorMessage(
                     `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
                 );
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                isRunning = false;
                 return;
             }
 
-            // Build command (also validates params — throws on unsafe input)
-            let built: ReturnType<typeof buildCommand>;
+            // Build command (also validates params — throws on unsafe input).
+            // Async on Windows: the fallback path copies the binary to %TEMP%
+            // using non-blocking I/O to avoid stalling the extension host.
+            let built: Awaited<ReturnType<typeof buildCommand>>;
             try {
-                built = buildCommand(ctracePath, filePath, params);
+                built = await buildCommand(ctracePath, filePath, params);
             } catch (e) {
                 vscode.window.showErrorMessage(`Invalid analysis parameters: ${e}`);
-                sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                isRunning = false;
                 return;
             }
             const { tempFiles } = built;
@@ -69,7 +97,9 @@ export function activate(context: vscode.ExtensionContext) {
             const extensionPath = context.extensionUri.fsPath;
 
             // Remove stale report file
-            const reportPath = path.join(extensionPath, 'ctrace-report.txt');
+            // Use the system temp directory — the extension install folder may
+            // be read-only (e.g. when installed from a VSIX on a managed system).
+            const reportPath = path.join(os.tmpdir(), `ctrace-report-${process.pid}.txt`);
             tryDelete(reportPath);
 
             // Execute with progress notification
@@ -84,7 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
                         ({ stdout, stderr, exitCode } = result);
 
                         if (result.killed) {
-                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            sidebarProvider.postMessage({ type: 'analysis-error' });
                             if (!token.isCancellationRequested) {
                                 vscode.window.showErrorMessage('Ctrace analysis timed out (2 min). Consider simplifying the entry points or checking for infinite loops.');
                                 output.appendLine('[timed out]');
@@ -101,11 +131,11 @@ export function activate(context: vscode.ExtensionContext) {
                         output.appendLine(`[exit code: ${exitCode ?? 0}]`);
 
                         // Parse results
-                        const sarif = parseSarifOutput(stdout, reportPath);
+                        const sarif = await parseSarifOutput(stdout, reportPath);
 
                         if (!sarif) {
                             handleNoResults(stdout, stderr, exitCode);
-                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            sidebarProvider.postMessage({ type: 'analysis-error' });
                             return;
                         }
 
@@ -113,10 +143,10 @@ export function activate(context: vscode.ExtensionContext) {
 
                         updateDiagnostics(sarif, diagnosticCollection, filePath);
 
-                        sidebarProvider._view?.webview.postMessage({
+                        sidebarProvider.postMessage({
                             type: 'analysis-result',
                             data: sarif,
-                        });
+                        } satisfies HostMessage);
 
                         vscode.window.showInformationMessage(
                             total > 0
@@ -125,12 +155,13 @@ export function activate(context: vscode.ExtensionContext) {
                         );
                     } catch (e) {
                         // Unexpected error (e.g. execFile failure, FS error) — unblock the button.
-                        sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                        sidebarProvider.postMessage({ type: 'analysis-error' });
                         vscode.window.showErrorMessage(`Ctrace analysis failed unexpectedly: ${e}`);
                         output.appendLine(`[error] ${e}`);
                     } finally {
                         // Always clean up temp files, even on crash/throw.
                         tempFiles.forEach(tryDelete);
+                        isRunning = false;
                     }
                 }
             );
@@ -142,7 +173,7 @@ export function deactivate() {}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function resolveParams(arg: any): string {
+function resolveParams(arg: AnalysisParams | string | undefined): string {
     const defaultParams = '--entry-points=main';
     if (typeof arg === 'string')                             { return arg; }
     if (arg && typeof arg === 'object' && arg.customParams) { return arg.customParams; }
@@ -150,11 +181,12 @@ function resolveParams(arg: any): string {
 }
 
 function tryDelete(filePath: string): void {
-    try {
-        if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); }
-    } catch (e) {
-        console.warn('[ctrace] Could not delete file:', filePath, e);
-    }
+    fs.promises.unlink(filePath).catch((e: NodeJS.ErrnoException) => {
+        // ENOENT is expected when the file was never created — suppress it.
+        if (e.code !== 'ENOENT') {
+            console.warn('[ctrace] Could not delete file:', filePath, e.message);
+        }
+    });
 }
 
 const CRASH_SIGNATURES = [

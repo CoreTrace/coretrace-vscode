@@ -40,7 +40,9 @@ export function parseAndValidateParams(raw: string): string[] {
     }
 
     // Strict allowlist: --flag  or  --flag=safeValue
-    const safe = /^--[a-zA-Z][a-zA-Z0-9-]*(?:=[a-zA-Z0-9_./:@,\-]*)?$/;
+    // Note: / and : are intentionally excluded to prevent path-traversal payloads
+    // such as --file=../../etc/passwd or --config=/etc/shadow.
+    const safe = /^--[a-zA-Z][a-zA-Z0-9-]*(?:=[a-zA-Z0-9_.@,\-]*)?$/;
     for (const token of tokens) {
         if (!safe.test(token)) {
             throw new Error(`Unsafe CLI parameter rejected: "${token}"`);
@@ -59,15 +61,36 @@ function shellEscapeArg(arg: string): string {
 }
 
 /**
+ * Converts a Windows-style path to its WSL POSIX equivalent using `wslpath`.
+ * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command
+ * fails or times out.
+ *
+ * @param winPath    The Windows path to convert.
+ * @param wslPrefix  The wsl invocation prefix to use (default: `"wsl"`).
+ */
+function toWslPath(winPath: string, wslPrefix: string = 'wsl'): string {
+    try {
+        // shellEscapeArg wraps in single quotes so backslashes and spaces in
+        // Windows paths cannot break out of the wslpath argument.
+        return cp.execSync(`${wslPrefix} wslpath -u ${shellEscapeArg(winPath)}`, { timeout: 5000 }).toString().trim();
+    } catch {
+        return winPath.replace(/\\/g, '/').replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+    }
+}
+
+/**
  * Builds the ctrace shell command for the current platform.
  * - Linux / macOS: native execution
  * - Windows: WSL-aware execution with automatic distro detection and temp-file fallback
+ *
+ * Async because the Windows fallback path copies files to the system temp
+ * directory using non-blocking I/O rather than blocking the extension host.
  */
-export function buildCommand(
+export async function buildCommand(
     ctracePath: string,
     inputFilePath: string,
     params: string
-): BuiltCommand {
+): Promise<BuiltCommand> {
     if (process.platform !== 'win32') {
         return buildNativeCommand(ctracePath, inputFilePath, params);
     }
@@ -89,7 +112,7 @@ function buildNativeCommand(ctracePath: string, inputFilePath: string, params: s
 
 // ─── Windows / WSL ───────────────────────────────────────────────────────────
 
-function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: string): BuiltCommand {
+async function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: string): Promise<BuiltCommand> {
     const tempFiles: string[] = [];
 
     const parseWslUNC = (p: string) => {
@@ -110,7 +133,7 @@ function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: 
     }
 
     // Fallback: copy files to Windows temp folder, run via default WSL distro
-    return buildFallbackCommand(ctracePath, inputFilePath, params, tempFiles);
+    return await buildFallbackCommand(ctracePath, inputFilePath, params, tempFiles);
 }
 
 function trySmartDistroExecution(
@@ -123,7 +146,7 @@ function trySmartDistroExecution(
 ): string | null {
     try {
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
-        const stdout = cp.execSync('wsl -l -v', { encoding: 'utf16le' });
+        const stdout = cp.execSync('wsl -l -v', { encoding: 'utf16le', timeout: 5000 });
         const lines = stdout.split(/[\r\n]+/).filter(l => l.trim());
 
         let defaultDistro = '';
@@ -150,11 +173,7 @@ function trySmartDistroExecution(
         const resolvePath = (origPath: string, wsl: { distro: string; internalPath: string } | null): string => {
             if (wsl?.distro === detectedDistro) { return wsl.internalPath; }
             const prefix = isDefault ? 'wsl' : `wsl ${distroFlag}`;
-            try {
-                return cp.execSync(`${prefix} wslpath -u "${origPath}"`).toString().trim();
-            } catch {
-                return origPath.replace(/\\/g, '/').replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
-            }
+            return toWslPath(origPath, prefix);
         };
 
         const finalBin = binWsl?.distro === detectedDistro ? binWsl.internalPath : resolvePath(ctracePath, binWsl);
@@ -171,39 +190,39 @@ function trySmartDistroExecution(
 
 /** Returns the -d flag string for wsl, or null if the distro is unreachable. */
 function resolveDistroFlag(distro: string): string | null {
+    // Strip any character that could escape the single-quoted argument,
+    // specifically double quotes that might break the outer shell string.
+    const safeDistro = distro.replace(/["'`\\]/g, '');
+    if (!safeDistro) { return null; }
     try {
-        cp.execSync(`wsl -d "${distro}" true`);
-        return `-d "${distro}"`;
+        cp.execSync(`wsl -d ${shellEscapeArg(safeDistro)} true`, { timeout: 5000 });
+        return `-d ${shellEscapeArg(safeDistro)}`;
     } catch {
-        if (!distro.includes(' ')) {
-            try {
-                cp.execSync(`wsl -d ${distro} true`);
-                return `-d ${distro}`;
-            } catch { /* fall through */ }
-        }
+        // fall through
     }
     return null;
 }
 
-function buildFallbackCommand(ctracePath: string, inputFilePath: string, params: string, tempFiles: string[]): BuiltCommand {
+async function buildFallbackCommand(ctracePath: string, inputFilePath: string, params: string, tempFiles: string[]): Promise<BuiltCommand> {
     const ext = path.extname(inputFilePath) || '.c';
-    const stamp = Date.now();
+    // Single timestamp shared across all temp names to prevent races between
+    // the two Date.now() calls that existed previously.
+    const stamp = `${Date.now()}-${process.pid}`;
 
-    const tempBin = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
+    const tempBin   = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
     const tempInput = path.join(os.tmpdir(), `ctrace-input-${stamp}${ext}`);
+    const lBin      = `/tmp/ctrace-${stamp}`;
 
-    fs.copyFileSync(ctracePath, tempBin);
-    fs.copyFileSync(inputFilePath, tempInput);
+    // Use async I/O — the ctrace binary can be 10–50 MB; a synchronous copy
+    // would block the VS Code extension host thread for hundreds of ms.
+    await fs.promises.copyFile(ctracePath, tempBin);
+    await fs.promises.copyFile(inputFilePath, tempInput);
     tempFiles.push(tempBin, tempInput);
 
-    const resolveWslPath = (p: string): string => {
-        try { return cp.execSync(`wsl wslpath -u "${p}"`).toString().trim(); }
-        catch { return p.replace(/\\/g, '/').replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`); }
-    };
+    const resolveWslPath = (p: string): string => toWslPath(p);
 
-    const wBin = resolveWslPath(tempBin);
+    const wBin   = resolveWslPath(tempBin);
     const wInput = resolveWslPath(tempInput);
-    const lBin = `/tmp/ctrace-${Math.floor(Math.random() * 100000)}`;
     // Validate params before embedding in the shell string.
     const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
 
