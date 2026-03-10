@@ -5,7 +5,7 @@ import type { AnalysisParams } from './extension';
 // ─── Webview → Extension message protocol ────────────────────────────────────
 //
 // Only these message shapes are accepted from the webview.
-// Any message with an unknown `type` is silently discarded.
+// Any message with an unknown `type` is logged and discarded.
 //
 // Security note: the webview runs in a sandboxed iframe with a strict CSP,
 // but we still validate every incoming message so that a compromised script

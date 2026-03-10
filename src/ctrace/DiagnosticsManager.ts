@@ -56,22 +56,49 @@ export function updateDiagnostics(
 }
 
 /**
+ * Converts a WSL mount path (produced by ctrace running inside WSL on Windows)
+ * to a Windows-style absolute path so `vscode.Uri.file()` resolves it correctly.
+ *
+ * Handles both POSIX-separator form   /mnt/c/Users/...
+ * and backslash-escaped form          \\mnt\\c\\Users\\...
+ *
+ * On non-Windows hosts the path is returned unchanged because `/mnt/...` is a
+ * legitimate native mount point there.
+ */
+function normaliseMountPath(p: string): string {
+    if (process.platform !== 'win32') { return p; }
+    // Normalise backslash variants to forward slashes first.
+    const forward = p.replace(/\\/g, '/');
+    // /mnt/<drive>/rest  →  <DRIVE>:/rest
+    return forward.replace(
+        /^\/{1,2}mnt\/([a-zA-Z])\//,
+        (_, drive: string) => `${drive.toUpperCase()}:/`
+    );
+}
+
+/**
  * Resolves a SARIF `artifactLocation.uri` to an absolute filesystem path.
  *
  * Resolution order:
- * 1. `file://` URI         → strip scheme, decode percent-encoding
- * 2. Absolute POSIX path   → use as-is
- * 3. Relative path         → resolve against the directory of `fallbackFilePath`
- * 4. Missing / unparseable → return `fallbackFilePath`
+ * 1. `file://` URI              → strip scheme, decode percent-encoding, normalise WSL mount
+ * 2. WSL `/mnt/<drive>/` path  → convert to `<DRIVE>:/` (Windows only)
+ * 3. Other absolute POSIX path  → use as-is
+ * 4. Relative path              → resolve against the directory of `fallbackFilePath`
+ * 5. Missing / unparseable      → return `fallbackFilePath`
  */
 function resolveArtifactPath(uri: string | undefined, fallbackFilePath: string): string {
     if (!uri) { return fallbackFilePath; }
     try {
         if (uri.startsWith('file://')) {
             // vscode.Uri.parse handles percent-encoding and platform differences.
-            return vscode.Uri.parse(uri).fsPath;
+            return normaliseMountPath(vscode.Uri.parse(uri).fsPath);
         }
-        if (path.isAbsolute(uri)) { return uri; }
+        if (path.isAbsolute(uri)) {
+            // Absolute paths from WSL may use /mnt/<drive>/... notation on
+            // Windows; normalise them so vscode.Uri.file() maps to the correct
+            // workspace document.
+            return normaliseMountPath(uri);
+        }
         // Relative path — resolve against the directory of the analysed file.
         return path.resolve(path.dirname(fallbackFilePath), uri);
     } catch {

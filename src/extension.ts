@@ -40,6 +40,10 @@ export function activate(context: vscode.ExtensionContext) {
     // while the first analysis is still running, or a keyboard shortcut being
     // triggered while the sidebar button is already spinning).
     let isRunning = false;
+    // Monotonic counter that makes every run's report file name unique.
+    // Using pid alone caused a race: the fire-and-forget unlink from run N
+    // could resolve after run N+1 had already written the same path.
+    let runSeq = 0;
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
@@ -96,11 +100,14 @@ export function activate(context: vscode.ExtensionContext) {
             // ctrace resolves ./tscancode, ./ikos etc. relative to its own directory
             const extensionPath = context.extensionUri.fsPath;
 
-            // Remove stale report file
-            // Use the system temp directory — the extension install folder may
-            // be read-only (e.g. when installed from a VSIX on a managed system).
-            const reportPath = path.join(os.tmpdir(), `ctrace-report-${process.pid}.txt`);
-            tryDelete(reportPath);
+            // Unique per-run path: pid + monotonic counter.
+            // A pid-only path was subject to a race condition where the
+            // fire-and-forget unlink from the previous run could resolve after
+            // the current run had already written its report to the same path.
+            // With a unique path every run owns its file; no pre-run cleanup
+            // is needed and the finally block handles removal alongside other
+            // temp files.
+            const reportPath = path.join(os.tmpdir(), `ctrace-report-${process.pid}-${++runSeq}.txt`);
 
             // Execute with progress notification
             output.show(true); // show without stealing focus
@@ -159,8 +166,8 @@ export function activate(context: vscode.ExtensionContext) {
                         vscode.window.showErrorMessage(`Ctrace analysis failed unexpectedly: ${e}`);
                         output.appendLine(`[error] ${e}`);
                     } finally {
-                        // Always clean up temp files, even on crash/throw.
-                        tempFiles.forEach(tryDelete);
+                        // Always clean up temp files and the per-run report, even on crash/throw.
+                        [...tempFiles, reportPath].forEach(tryDelete);
                         isRunning = false;
                     }
                 }
@@ -180,8 +187,8 @@ function resolveParams(arg: AnalysisParams | string | undefined): string {
     return defaultParams;
 }
 
-function tryDelete(filePath: string): void {
-    fs.promises.unlink(filePath).catch((e: NodeJS.ErrnoException) => {
+function tryDelete(filePath: string): Promise<void> {
+    return fs.promises.unlink(filePath).catch((e: NodeJS.ErrnoException) => {
         // ENOENT is expected when the file was never created — suppress it.
         if (e.code !== 'ENOENT') {
             console.warn('[ctrace] Could not delete file:', filePath, e.message);
