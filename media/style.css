@@ -34,12 +34,9 @@ body {
     justify-content: center;
     width: 40px;
     height: 40px;
-    background: linear-gradient(
-        135deg,
-        color-mix(in srgb, var(--vscode-button-background) 10%, transparent),
-        color-mix(in srgb, var(--vscode-charts-purple) 10%, transparent)
-    );
-    border: 1px solid color-mix(in srgb, var(--vscode-button-background) 20%, transparent);
+    /* Fallback for Chromium < 111 (VS Code < 1.90): static semi-transparent tints. */
+    background: linear-gradient(135deg, rgba(0, 120, 212, 0.10), rgba(121, 60, 180, 0.10));
+    border: 1px solid rgba(0, 120, 212, 0.20);
     border-radius: 50%;
     color: var(--vscode-textLink-foreground);
 }
@@ -294,7 +291,8 @@ body {
 
 .vuln-item:hover {
     background: var(--vscode-list-hoverBackground);
-    border-color: color-mix(in srgb, var(--vscode-button-background) 40%, transparent);
+    /* Fallback for Chromium < 111: use the button colour at full opacity. */
+    border-color: var(--vscode-button-background);
     transform: translateX(2px);
 }
 
@@ -341,19 +339,20 @@ body {
 }
 
 .sev-error   {
-    background: color-mix(in srgb, var(--vscode-charts-red)    13%, transparent);
+    /* Fallback for Chromium < 111: static rgba tints approximating a dark-theme red. */
+    background: rgba(205,  49,  49, 0.13);
     color: var(--vscode-charts-red);
-    border: 1px solid color-mix(in srgb, var(--vscode-charts-red)    27%, transparent);
+    border: 1px solid rgba(205,  49,  49, 0.27);
 }
 .sev-warning {
-    background: color-mix(in srgb, var(--vscode-charts-orange) 13%, transparent);
+    background: rgba(229, 153,  47, 0.13);
     color: var(--vscode-charts-orange);
-    border: 1px solid color-mix(in srgb, var(--vscode-charts-orange) 27%, transparent);
+    border: 1px solid rgba(229, 153,  47, 0.27);
 }
 .sev-note    {
-    background: color-mix(in srgb, var(--vscode-charts-blue)   13%, transparent);
+    background: rgba( 59, 130, 246, 0.13);
     color: var(--vscode-charts-blue);
-    border: 1px solid color-mix(in srgb, var(--vscode-charts-blue)   27%, transparent);
+    border: 1px solid rgba( 59, 130, 246, 0.27);
 }
 
 .vuln-loc {
@@ -396,6 +395,38 @@ body {
     padding: 24px 0 8px;
     color: var(--vscode-descriptionForeground);
     font-size: 0.8em;
+}
+
+/* ── color-mix() progressive enhancement ───────────────────────────────────── */
+/* color-mix() requires Chromium ≥ 111 (VS Code ≥ 1.90).  The rules above       */
+/* provide static rgba() fallbacks; these declarations override them when the    */
+/* engine supports the function, restoring theme-adaptive tinted colours.        */
+@supports (color: color-mix(in srgb, red 50%, transparent)) {
+    .header-icon {
+        background: linear-gradient(
+            135deg,
+            color-mix(in srgb, var(--vscode-button-background) 10%, transparent),
+            color-mix(in srgb, var(--vscode-charts-purple) 10%, transparent)
+        );
+        border-color: color-mix(in srgb, var(--vscode-button-background) 20%, transparent);
+    }
+
+    .vuln-item:hover {
+        border-color: color-mix(in srgb, var(--vscode-button-background) 40%, transparent);
+    }
+
+    .sev-error {
+        background: color-mix(in srgb, var(--vscode-charts-red)    13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-red)    27%, transparent);
+    }
+    .sev-warning {
+        background: color-mix(in srgb, var(--vscode-charts-orange) 13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-orange) 27%, transparent);
+    }
+    .sev-note {
+        background: color-mix(in srgb, var(--vscode-charts-blue)   13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-blue)   27%, transparent);
+    }
 }
 
 .empty-state svg {

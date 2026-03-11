@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
@@ -40,10 +39,6 @@ export function activate(context: vscode.ExtensionContext) {
     // while the first analysis is still running, or a keyboard shortcut being
     // triggered while the sidebar button is already spinning).
     let isRunning = false;
-    // Monotonic counter that makes every run's report file name unique.
-    // Using pid alone caused a race: the fire-and-forget unlink from run N
-    // could resolve after run N+1 had already written the same path.
-    let runSeq = 0;
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
@@ -100,14 +95,13 @@ export function activate(context: vscode.ExtensionContext) {
             // ctrace resolves ./tscancode, ./ikos etc. relative to its own directory
             const extensionPath = context.extensionUri.fsPath;
 
-            // Unique per-run path: pid + monotonic counter.
-            // A pid-only path was subject to a race condition where the
-            // fire-and-forget unlink from the previous run could resolve after
-            // the current run had already written its report to the same path.
-            // With a unique path every run owns its file; no pre-run cleanup
-            // is needed and the finally block handles removal alongside other
-            // temp files.
-            const reportPath = path.join(os.tmpdir(), `ctrace-report-${process.pid}-${++runSeq}.txt`);
+            // ctrace writes its SARIF report to a fixed path relative to its
+            // working directory (cwd = extensionPath).  We use that exact path
+            // so parseSarifOutput() can read the file.
+            // Cross-run races are prevented by the isRunning guard above:
+            // isRunning is only cleared after awaited cleanup finishes, so
+            // run N+1 cannot start until run N has deleted the report file.
+            const reportPath = path.join(extensionPath, 'ctrace-report.txt');
 
             // Execute with progress notification
             output.show(true); // show without stealing focus

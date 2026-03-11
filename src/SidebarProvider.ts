@@ -84,6 +84,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // ── Private: message dispatch ─────────────────────────────────────────────
 
     private _handleMessage(data: WebviewMessage): void {
+        // onDidReceiveMessage crosses an untyped JS boundary — data can be
+        // anything (null, a string, a number …).  Guard before touching any
+        // property to prevent a TypeError from crashing the extension host.
+        if (!data || typeof data !== 'object') {
+            console.warn('[CoreTrace] Received non-object message from webview:', data);
+            return;
+        }
         // Runtime guard: the TypeScript type only covers known shapes, but the
         // actual postMessage() data is untyped at the JS boundary.
         const msg = data as { type?: unknown };
