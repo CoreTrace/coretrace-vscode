@@ -166,8 +166,10 @@ export function activate(context: vscode.ExtensionContext) {
                         vscode.window.showErrorMessage(`Ctrace analysis failed unexpectedly: ${e}`);
                         output.appendLine(`[error] ${e}`);
                     } finally {
-                        // Always clean up temp files and the per-run report, even on crash/throw.
-                        [...tempFiles, reportPath].forEach(tryDelete);
+                        // Await all deletions so cleanup is complete before the
+                        // command handler returns, and so any future changes to
+                        // tryDelete cannot silently introduce unhandled rejections.
+                        await Promise.all([...tempFiles, reportPath].map(tryDelete));
                         isRunning = false;
                     }
                 }

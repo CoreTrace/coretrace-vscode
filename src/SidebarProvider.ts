@@ -150,11 +150,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
      * that path to avoid "file not found" when cross-FS mount points differ.
      */
     private _resolveFilePath(filePath: string): string {
-        // /mnt/c/... or \\mnt\c\... → C:/...
-        let resolved = filePath.replace(
-            /^[/\\]{1,2}mnt[/\\]([a-zA-Z])[/\\]/,
-            (_, drive: string) => `${drive.toUpperCase()}:/`
-        );
+        // Convert WSL mount paths to Windows-style paths, but only on Windows.
+        // On Linux/macOS, /mnt/... is a legitimate native mount point and must
+        // not be rewritten (mirrors the guard in DiagnosticsManager.normaliseMountPath).
+        let resolved = filePath;
+        if (process.platform === 'win32') {
+            resolved = filePath.replace(
+                /^[/\\]{1,2}mnt[/\\]([a-zA-Z])[/\\]/,
+                (_, drive: string) => `${drive.toUpperCase()}:/`
+            );
+        }
 
         // Prefer the on-disk path VS Code already knows about when the
         // basenames match (avoids flicker and mount-point mismatch errors).

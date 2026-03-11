@@ -188,9 +188,11 @@ function trySmartDistroExecution(
 
         const resolvePath = (origPath: string, wsl: { distro: string; internalPath: string } | null): string => {
             if (wsl?.distro === detectedDistro) { return wsl.internalPath; }
-            // Pass the raw distro name so toWslPath can use execFileSync with
-            // an args array — no shell quoting needed or wanted here.
-            return toWslPath(origPath, isDefault ? null : matchedDistro);
+            // Use safeDistroName (sanitized + reachability-verified) so that
+            // toWslPath targets the exact same distro as the final prefix.
+            // Passing the raw matchedDistro could probe a different distro if
+            // stripping shell-significant characters changes the name.
+            return toWslPath(origPath, isDefault ? null : safeDistroName);
         };
 
         const finalBin = binWsl?.distro === detectedDistro ? binWsl.internalPath : resolvePath(ctracePath, binWsl);
