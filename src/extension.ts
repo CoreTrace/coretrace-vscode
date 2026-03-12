@@ -8,6 +8,8 @@ import { buildCommand }       from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics }  from './ctrace/DiagnosticsManager';
+import { scanWorkspace, clearCache } from './ctrace/WorkspaceScanner';
+import type { SarifLog } from './types/sarif';
 
 // Parameters passed by the webview when triggering an analysis run.
 export interface AnalysisParams {
@@ -39,6 +41,198 @@ export function activate(context: vscode.ExtensionContext) {
     // while the first analysis is still running, or a keyboard shortcut being
     // triggered while the sidebar button is already spinning).
     let isRunning = false;
+
+    // ── Shared helpers ───────────────────────────────────────────────────────
+    async function locateOrError(): Promise<string | null> {
+        const p = await locateBinary(context.extensionUri.fsPath);
+        if (!p) {
+            vscode.window.showErrorMessage(
+                `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
+            );
+        }
+        return p;
+    }
+
+    // ── Command: ctrace.runWorkspaceAnalysis ─────────────────────────────────
+    // Scans the workspace for C/C++ files, hands compile_commands.json to
+    // ctrace when available, and runs a file-by-file analysis otherwise.
+    // Only files whose content changed since the last run are re-analysed;
+    // the rest are served from the in-process hash cache.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.runWorkspaceAnalysis', async (arg?: AnalysisParams | string) => {
+            if (isRunning) {
+                vscode.window.showWarningMessage('An analysis is already in progress.');
+                return;
+            }
+
+            if (!vscode.workspace.workspaceFolders?.length) {
+                vscode.window.showErrorMessage('Please open a workspace folder.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                return;
+            }
+
+            const ctracePath = await locateOrError();
+            if (!ctracePath) {
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                return;
+            }
+
+            const params = resolveParams(arg);
+            isRunning = true;
+            const extensionPath = context.extensionUri.fsPath;
+            const reportPath    = path.join(extensionPath, 'ctrace-report.txt');
+
+            output.show(true);
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'Ctrace — scanning workspace…', cancellable: true },
+                async (progress, token) => {
+                    try {
+                        // Discover files; detect which ones changed since last run.
+                        const scan = await scanWorkspace();
+
+                        if (scan.files.length === 0) {
+                            vscode.window.showWarningMessage('No C/C++ source files found in the workspace.');
+                            sidebarProvider.postMessage({ type: 'analysis-error' });
+                            return;
+                        }
+
+                        // Decide which files actually need analysis.
+                        const toAnalyse = scan.changedFiles.length > 0 ? scan.changedFiles : scan.files;
+                        const cachedCount = scan.files.length - toAnalyse.length;
+
+                        sidebarProvider.postMessage({
+                            type: 'workspace-progress',
+                            total:   scan.files.length,
+                            changed: toAnalyse.length,
+                            cached:  cachedCount,
+                            done:    0,
+                        } satisfies HostMessage);
+
+                        const merged: SarifLog = { version: '2.1.0', runs: [] };
+                        let totalIssues = 0;
+                        let analysedCount = 0;
+
+                        // ── compile_commands.json path ────────────────────────
+                        if (scan.compileCommandsPath) {
+                            // Pass the compilation database directly — ctrace can
+                            // resolve translation units and dependencies on its own.
+                            progress.report({ message: `Using compile_commands.json (${toAnalyse.length} files)` });
+                            const built = await buildCommand(ctracePath, scan.compileCommandsPath, params, true);
+                            await tryDelete(reportPath);
+                            const result = await runCommand(built, extensionPath, token);
+                            if (token.isCancellationRequested || result.killed) {
+                                sidebarProvider.postMessage({ type: 'analysis-error' });
+                                return;
+                            }
+                            output.clear();
+                            output.appendLine('[workspace] compile_commands mode');
+                            if (result.stdout) { output.appendLine(result.stdout); }
+                            if (result.stderr) { output.appendLine('[stderr] ' + result.stderr); }
+                            const sarif = await parseSarifOutput(result.stdout, reportPath);
+                            if (sarif) {
+                                merged.runs.push(...sarif.runs);
+                                totalIssues += countResults(sarif);
+                            }
+                            await tryDelete(reportPath);
+                            if (built.tempFiles?.length) {
+                                await Promise.all(built.tempFiles.map(tryDelete));
+                            }
+                            // Mark compile_commands run as 100% complete
+                            sidebarProvider.postMessage({
+                                type: 'workspace-progress',
+                                total:   scan.files.length,
+                                changed: toAnalyse.length,
+                                cached:  cachedCount,
+                                done:    toAnalyse.length,
+                            } satisfies HostMessage);
+                        } else {
+                            // ── File-by-file fallback ─────────────────────────
+                            for (const file of toAnalyse) {
+                                if (token.isCancellationRequested) { break; }
+
+                                progress.report({
+                                    message: `${path.basename(file.fsPath)} (${analysedCount + 1}/${toAnalyse.length})`,
+                                    increment: 100 / toAnalyse.length,
+                                });
+
+                                try {
+                                    const built = await buildCommand(ctracePath, file.fsPath, params);
+                                    await tryDelete(reportPath);
+                                    const result = await runCommand(built, extensionPath, token);
+
+                                    if (result.stdout || result.stderr) {
+                                        output.appendLine(`\n--- ${path.basename(file.fsPath)} ---`);
+                                        if (result.stdout) { output.appendLine(result.stdout); }
+                                        if (result.stderr) { output.appendLine('[stderr] ' + result.stderr); }
+                                    }
+
+                                    if (!result.killed) {
+                                        const sarif = await parseSarifOutput(result.stdout, reportPath);
+                                        if (sarif) {
+                                            merged.runs.push(...sarif.runs);
+                                            totalIssues += countResults(sarif);
+                                        }
+                                    }
+
+                                    await tryDelete(reportPath);
+                                    if (built.tempFiles?.length) {
+                                        await Promise.all(built.tempFiles.map(tryDelete));
+                                    }
+                                } catch (e) {
+                                    output.appendLine(`[error] ${file.fsPath}: ${e}`);
+                                }
+
+                                analysedCount++;
+                                sidebarProvider.postMessage({
+                                    type: 'workspace-progress',
+                                    total:   scan.files.length,
+                                    changed: toAnalyse.length,
+                                    cached:  cachedCount,
+                                    done:    analysedCount,
+                                } satisfies HostMessage);
+                            }
+                        }
+
+                        if (token.isCancellationRequested) {
+                            sidebarProvider.postMessage({ type: 'analysis-error' });
+                            return;
+                        }
+
+                        updateDiagnostics(merged, diagnosticCollection, '');
+
+                        sidebarProvider.postMessage({
+                            type: 'analysis-result',
+                            data: merged,
+                        } satisfies HostMessage);
+
+                        const skippedMsg = cachedCount > 0 ? ` (${cachedCount} unchanged, skipped)` : '';
+                        vscode.window.showInformationMessage(
+                            totalIssues > 0
+                                ? `Workspace analysis — ${totalIssues} issue${totalIssues > 1 ? 's' : ''} found.${skippedMsg}`
+                                : `Workspace analysis complete — no issues found.${skippedMsg}`
+                        );
+                    } catch (e) {
+                        sidebarProvider.postMessage({ type: 'analysis-error' });
+                        vscode.window.showErrorMessage(`Ctrace workspace analysis failed: ${e}`);
+                        output.appendLine(`[error] ${e}`);
+                    } finally {
+                        // Always clean up the report file, matching the single-file command's
+                        // finally block — so a crashed ctrace run never leaves a stale report.
+                        await tryDelete(reportPath);
+                        isRunning = false;
+                    }
+                }
+            );
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.clearAnalysisCache', () => {
+            clearCache();
+            vscode.window.showInformationMessage('Ctrace analysis cache cleared — next workspace run will re-analyse all files.');
+        })
+    );
+
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {

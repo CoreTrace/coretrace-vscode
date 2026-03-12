@@ -60,6 +60,102 @@ body {
     text-transform: uppercase;
 }
 
+/* ── Scope selector (segmented control) ────────────────────────────────────── */
+.scope-selector {
+    display: flex;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.3));
+    border-radius: 8px;
+    padding: 3px;
+    gap: 3px;
+}
+
+.scope-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+    font-size: 0.78em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.scope-option.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground, #fff);
+}
+
+.scope-option:not(.active):hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12));
+    color: var(--vscode-foreground);
+}
+
+.scope-option svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+/* ── Workspace pill ────────────────────────────────────────────────────────── */
+.ws-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-button-background);
+    border-radius: 6px;
+    font-size: 0.78em;
+    color: var(--vscode-foreground);
+    overflow: hidden;
+}
+
+.ws-pill svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    color: var(--vscode-textLink-foreground);
+}
+
+/* ── Workspace progress bar ────────────────────────────────────────────────── */
+.ws-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ws-progress-bar-track {
+    width: 100%;
+    height: 4px;
+    background: var(--vscode-input-border, rgba(128,128,128,0.25));
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.ws-progress-bar {
+    height: 4px;
+    background: var(--vscode-button-background);
+    border-radius: 999px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.ws-progress-text {
+    font-size: 0.72em;
+    color: var(--vscode-descriptionForeground);
+    text-align: center;
+}
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+
 /* ── File pill ─────────────────────────────────────────────────────────────── */
 .file-pill {
     display: flex;

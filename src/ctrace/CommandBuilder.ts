@@ -94,36 +94,42 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
  * - Linux / macOS: native execution
  * - Windows: WSL-aware execution with automatic distro detection and temp-file fallback
  *
+ * When `compileCommands` is true, `inputFilePath` is treated as a path to a
+ * `compile_commands.json` database and `--compile-commands` is passed instead
+ * of `--input`.
+ *
  * Async because the Windows fallback path copies files to the system temp
  * directory using non-blocking I/O rather than blocking the extension host.
  */
 export async function buildCommand(
     ctracePath: string,
     inputFilePath: string,
-    params: string
+    params: string,
+    compileCommands = false
 ): Promise<BuiltCommand> {
     if (process.platform !== 'win32') {
-        return buildNativeCommand(ctracePath, inputFilePath, params);
+        return buildNativeCommand(ctracePath, inputFilePath, params, compileCommands);
     }
-    return buildWindowsCommand(ctracePath, inputFilePath, params);
+    return buildWindowsCommand(ctracePath, inputFilePath, params, compileCommands);
 }
 
 // ─── Linux / macOS ───────────────────────────────────────────────────────────
 
-function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string): BuiltCommand {
+function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string, compileCommands: boolean): BuiltCommand {
     const validatedParams = parseAndValidateParams(params);
+    const inputFlag = compileCommands ? '--compile-commands' : '--input';
     // Use execFile — no shell spawn, so shell metacharacters in any argument
     // can never be interpreted as commands.
     return {
         file: ctracePath,
-        args: ['--input', inputFilePath, ...validatedParams, '--sarif-format'],
+        args: [inputFlag, inputFilePath, ...validatedParams, '--sarif-format'],
         tempFiles: [],
     };
 }
 
 // ─── Windows / WSL ───────────────────────────────────────────────────────────
 
-async function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: string): Promise<BuiltCommand> {
+async function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: string, compileCommands: boolean): Promise<BuiltCommand> {
     const tempFiles: string[] = [];
 
     const parseWslUNC = (p: string) => {
@@ -137,14 +143,14 @@ async function buildWindowsCommand(ctracePath: string, inputFilePath: string, pa
     const detectedDistro = binWsl?.distro ?? inputWsl?.distro;
 
     if (detectedDistro) {
-        const result = trySmartDistroExecution(ctracePath, inputFilePath, params, detectedDistro, binWsl, inputWsl);
+        const result = trySmartDistroExecution(ctracePath, inputFilePath, params, detectedDistro, binWsl, inputWsl, compileCommands);
         if (result) {
             return { command: result, tempFiles };
         }
     }
 
     // Fallback: copy files to Windows temp folder, run via default WSL distro
-    return await buildFallbackCommand(ctracePath, inputFilePath, params, tempFiles);
+    return await buildFallbackCommand(ctracePath, inputFilePath, params, tempFiles, compileCommands);
 }
 
 function trySmartDistroExecution(
@@ -153,7 +159,8 @@ function trySmartDistroExecution(
     params: string,
     detectedDistro: string,
     binWsl: { distro: string; internalPath: string } | null,
-    inputWsl: { distro: string; internalPath: string } | null
+    inputWsl: { distro: string; internalPath: string } | null,
+    compileCommands: boolean
 ): string | null {
     try {
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
@@ -205,8 +212,9 @@ function trySmartDistroExecution(
         // safeDistroName has '"', "'", '`' and '\' stripped, so embedding
         // it inside "..." is safe even for names that contain spaces.
         const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
+        const inputFlag = compileCommands ? '--compile-commands' : '--input';
 
-        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)} ${validatedParams} --sarif-format"`;
+        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} ${inputFlag} ${shellEscapeArg(finalInput)} ${validatedParams} --sarif-format"`;
     } catch {
         return null;
     }
@@ -234,7 +242,7 @@ function resolveDistroName(distro: string): string | null {
     return null;
 }
 
-async function buildFallbackCommand(ctracePath: string, inputFilePath: string, params: string, tempFiles: string[]): Promise<BuiltCommand> {
+async function buildFallbackCommand(ctracePath: string, inputFilePath: string, params: string, tempFiles: string[], compileCommands: boolean): Promise<BuiltCommand> {
     const ext = path.extname(inputFilePath) || '.c';
     // Single timestamp shared across all temp names to prevent races between
     // the two Date.now() calls that existed previously.
@@ -254,7 +262,8 @@ async function buildFallbackCommand(ctracePath: string, inputFilePath: string, p
     const wInput = toWslPath(tempInput);
     // Validate params before embedding in the shell string.
     const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
+    const inputFlag = compileCommands ? '--compile-commands' : '--input';
 
-    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
+    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} ${inputFlag} ${shellEscapeArg(wInput)} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }

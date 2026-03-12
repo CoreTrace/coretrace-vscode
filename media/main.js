@@ -2,16 +2,23 @@
     const vscode = acquireVsCodeApi();
 
     // ── DOM refs ───────────────────────────────────────────────────────────────
-    const runBtn          = document.getElementById('run-btn');
-    const runLabel        = document.getElementById('run-label');
-    const paramsInput     = document.getElementById('params-input');
-    const resultsContainer= document.getElementById('results-container');
-    const vulnList        = document.getElementById('vuln-list');
-    const vulnCount       = document.getElementById('vuln-count');
-    const advancedBtn     = document.getElementById('advanced-btn');
-    const advancedPanel   = document.getElementById('advanced-panel');
-    const emptyState      = document.getElementById('empty-state');
-    const fileLabel       = document.getElementById('file-label');
+    const runBtn           = document.getElementById('run-btn');
+    const runLabel         = document.getElementById('run-label');
+    const paramsInput      = document.getElementById('params-input');
+    const resultsContainer = document.getElementById('results-container');
+    const vulnList         = document.getElementById('vuln-list');
+    const vulnCount        = document.getElementById('vuln-count');
+    const advancedBtn      = document.getElementById('advanced-btn');
+    const advancedPanel    = document.getElementById('advanced-panel');
+    const emptyState       = document.getElementById('empty-state');
+    const fileLabel        = document.getElementById('file-label');
+    const filePill         = document.getElementById('file-pill');
+    const scopeFile        = document.getElementById('scope-file');
+    const scopeWs          = document.getElementById('scope-ws');
+    const wsPill           = document.getElementById('ws-pill');
+    const wsProgress       = document.getElementById('ws-progress');
+    const wsProgressBar    = document.getElementById('ws-progress-bar');
+    const wsProgressText   = document.getElementById('ws-progress-text');
 
     // ── Init Lucide icons ──────────────────────────────────────────────────────
     // Must run BEFORE capturing chevron: createIcons() replaces <i> with <svg>,
@@ -20,7 +27,22 @@
         lucide.createIcons();
     }
 
-    // Captured AFTER createIcons so it references the live <svg> node
+    // ── Scope selector ─────────────────────────────────────────────────────────
+    let workspaceMode = false;
+
+    function applyScope(ws) {
+        workspaceMode = !!ws;
+        if (scopeFile)  { scopeFile.classList.toggle('active', !workspaceMode); }
+        if (scopeWs)    { scopeWs.classList.toggle('active',  workspaceMode); }
+        if (filePill)   { filePill.classList.toggle('hidden',  workspaceMode); }
+        if (wsPill)     { wsPill.classList.toggle('hidden',   !workspaceMode); }
+        if (wsProgress) { wsProgress.classList.add('hidden'); }
+        if (runLabel)   { runLabel.textContent = 'Run Analysis'; }
+    }
+
+    if (scopeFile) { scopeFile.addEventListener('click', () => applyScope(false)); }
+    if (scopeWs)   { scopeWs.addEventListener('click',   () => applyScope(true));  }
+    applyScope(false);
 
     // ── Advanced flags toggle ──────────────────────────────────────────────────
     if (advancedBtn && advancedPanel) {
@@ -38,14 +60,23 @@
     if (runBtn) {
         runBtn.addEventListener('click', () => {
             const params = paramsInput ? paramsInput.value.trim() : '';
-
             setRunning(true);
 
-            vscode.postMessage({
-                type: 'execute-command',
-                command: 'ctrace.runAnalysis',
-                params: { customParams: params }
-            });
+            if (workspaceMode) {
+                if (wsProgress) { wsProgress.classList.remove('hidden'); }
+                setWsProgress(0, 0, 0, 0);
+                vscode.postMessage({
+                    type: 'execute-command',
+                    command: 'ctrace.runWorkspaceAnalysis',
+                    params: { customParams: params }
+                });
+            } else {
+                vscode.postMessage({
+                    type: 'execute-command',
+                    command: 'ctrace.runAnalysis',
+                    params: { customParams: params }
+                });
+            }
         });
     }
 
@@ -60,11 +91,15 @@
                 // Ensures the button is never stuck in loading state when
                 // the analysis fails, crashes, or produces no parseable output.
                 setRunning(false);
+                if (wsProgress) { wsProgress.classList.add('hidden'); }
                 break;
             case 'active-file':
                 if (fileLabel) {
                     fileLabel.textContent = msg.name || 'No file open';
                 }
+                break;
+            case 'workspace-progress':
+                setWsProgress(msg.total, msg.changed, msg.cached, msg.done);
                 break;
         }
     });
@@ -79,12 +114,24 @@
         // No lucide.createIcons() call needed — avoids invalidating other SVG refs.
     }
 
+    function setWsProgress(total, changed, cached, done) {
+        if (!wsProgressBar || !wsProgressText) { return; }
+        const pct = changed > 0 ? Math.round((done / changed) * 100) : 0;
+        wsProgressBar.style.width = pct + '%';
+        if (cached > 0) {
+            wsProgressText.textContent = `${done}/${changed} analysed · ${cached} cached`;
+        } else {
+            wsProgressText.textContent = `${done}/${changed} files`;
+        }
+    }
+
     function handleAnalysisResult(sarif) {
         setRunning(false);
+        if (wsProgress) { wsProgress.classList.add('hidden'); }
 
-        if (emptyState)      { emptyState.style.display = 'none'; }
-        if (resultsContainer){ resultsContainer.classList.remove('results-hidden'); }
-        if (vulnList)        { vulnList.innerHTML = ''; }
+        if (emptyState)       { emptyState.style.display = 'none'; }
+        if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
+        if (vulnList)         { vulnList.innerHTML = ''; }
 
         let count = 0;
 
@@ -171,3 +218,4 @@
     }
 
 }());
+
