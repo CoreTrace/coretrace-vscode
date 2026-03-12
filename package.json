@@ -34,6 +34,14 @@
       {
         "command": "ctrace.runAnalysis",
         "title": "Run Analysis"
+      },
+      {
+        "command": "ctrace.runWorkspaceAnalysis",
+        "title": "Run Workspace Analysis"
+      },
+      {
+        "command": "ctrace.clearAnalysisCache",
+        "title": "Clear Analysis Cache"
       }
     ]
   },
