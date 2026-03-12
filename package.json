@@ -25,7 +25,8 @@
         {
           "type": "webview",
           "id": "ctrace-audit-view",
-          "name": "Audit Dashboard"
+          "name": "Audit Dashboard",
+          "icon": "$(shield)"
         }
       ]
     },

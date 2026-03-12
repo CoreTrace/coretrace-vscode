@@ -68,10 +68,10 @@ export function runCommand(
         const cancelListener = token?.onCancellationRequested(() => kill('Analysis cancelled by user.'));
 
         // If already cancelled before we even spawned, bail immediately.
+        // Use finish() (not resolve() directly) so that `settled` is set to true,
+        // keeping state consistent with every other exit path.
         if (token?.isCancellationRequested) {
-            clearTimeout(timer);
-            cancelListener?.dispose();
-            resolve({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
+            finish({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
             return;
         }
 

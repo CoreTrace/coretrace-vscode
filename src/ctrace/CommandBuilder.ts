@@ -157,7 +157,9 @@ function trySmartDistroExecution(
 ): string | null {
     try {
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
-        const stdout = cp.execSync('wsl -l -v', { encoding: 'utf16le', timeout: 5000 });
+        // execFileSync avoids spawning a shell (cmd.exe); encoding:'utf16le' is
+        // supported by Node's execFileSync just as it is by execSync.
+        const stdout = cp.execFileSync('wsl', ['-l', '-v'], { encoding: 'utf16le', timeout: 5000 });
         const lines = stdout.split(/[\r\n]+/).filter(l => l.trim());
 
         let defaultDistro = '';
@@ -248,10 +250,8 @@ async function buildFallbackCommand(ctracePath: string, inputFilePath: string, p
     await fs.promises.copyFile(inputFilePath, tempInput);
     tempFiles.push(tempBin, tempInput);
 
-    const resolveWslPath = (p: string): string => toWslPath(p);
-
-    const wBin   = resolveWslPath(tempBin);
-    const wInput = resolveWslPath(tempInput);
+    const wBin   = toWslPath(tempBin);
+    const wInput = toWslPath(tempInput);
     // Validate params before embedding in the shell string.
     const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
 
