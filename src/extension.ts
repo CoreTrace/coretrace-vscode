@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
 import { locateBinary }       from './ctrace/BinaryLocator';
-import { buildCommand }       from './ctrace/CommandBuilder';
+import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics }  from './ctrace/DiagnosticsManager';
@@ -78,6 +78,18 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             const params = resolveParams(arg);
+
+            // Validate params once upfront — same flow as ctrace.runAnalysis — so
+            // an unsafe/invalid flag surfaces as a clear error before the scan starts
+            // rather than failing mid-run (compile_commands mode) or per-file (file-by-file).
+            try {
+                parseAndValidateParams(params);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Invalid analysis parameters: ${e}`);
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                return;
+            }
+
             isRunning = true;
             const extensionPath = context.extensionUri.fsPath;
             const reportPath    = path.join(extensionPath, 'ctrace-report.txt');
@@ -97,8 +109,16 @@ export function activate(context: vscode.ExtensionContext) {
                         }
 
                         // Decide which files actually need analysis.
-                        const toAnalyse = scan.changedFiles.length > 0 ? scan.changedFiles : scan.files;
-                        const cachedCount = scan.files.length - toAnalyse.length;
+                        // In compile_commands mode ctrace receives the full compilation
+                        // database and runs once — it cannot skip individual files based
+                        // on our hash cache, so reporting cached counts would be misleading.
+                        // In file-by-file mode the hash cache is meaningful and we only
+                        // invoke ctrace for files whose content actually changed.
+                        const usingCompileCommands = !!scan.compileCommandsPath;
+                        const toAnalyse   = usingCompileCommands ? scan.files
+                                          : (scan.changedFiles.length > 0 ? scan.changedFiles : scan.files);
+                        const cachedCount = usingCompileCommands ? 0
+                                          : scan.files.length - toAnalyse.length;
 
                         sidebarProvider.postMessage({
                             type: 'workspace-progress',
@@ -111,12 +131,13 @@ export function activate(context: vscode.ExtensionContext) {
                         const merged: SarifLog = { version: '2.1.0', runs: [] };
                         let totalIssues = 0;
                         let analysedCount = 0;
+                        let failureCount = 0;
 
                         // ── compile_commands.json path ────────────────────────
                         if (scan.compileCommandsPath) {
                             // Pass the compilation database directly — ctrace can
                             // resolve translation units and dependencies on its own.
-                            progress.report({ message: `Using compile_commands.json (${toAnalyse.length} files)` });
+                            progress.report({ message: `Using compile_commands.json (${scan.files.length} files)` });
                             const built = await buildCommand(ctracePath, scan.compileCommandsPath, params, true);
                             await tryDelete(reportPath);
                             const result = await runCommand(built, extensionPath, token);
@@ -179,6 +200,7 @@ export function activate(context: vscode.ExtensionContext) {
                                         await Promise.all(built.tempFiles.map(tryDelete));
                                     }
                                 } catch (e) {
+                                    failureCount++;
                                     output.appendLine(`[error] ${file.fsPath}: ${e}`);
                                 }
 
@@ -198,7 +220,23 @@ export function activate(context: vscode.ExtensionContext) {
                             return;
                         }
 
-                        updateDiagnostics(merged, diagnosticCollection, '');
+                        // If every file failed (e.g. params rejected, binary missing) there
+                        // is nothing meaningful to show — treat it as a hard error.
+                        if (!usingCompileCommands && failureCount > 0 && analysedCount === failureCount) {
+                            sidebarProvider.postMessage({ type: 'analysis-error' });
+                            vscode.window.showErrorMessage(
+                                `Workspace analysis failed: all ${failureCount} file${failureCount > 1 ? 's' : ''} could not be analysed. Check the Ctrace output for details.`
+                            );
+                            return;
+                        }
+
+                        // Use the compile_commands directory (= workspace root) when available;
+                        // fall back to the first workspace folder. Either gives resolveArtifactPath
+                        // a real base so relative SARIF URIs don't silently resolve against cwd.
+                        const diagFallback = scan.compileCommandsPath
+                            ? path.dirname(scan.compileCommandsPath)
+                            : vscode.workspace.workspaceFolders![0].uri.fsPath;
+                        updateDiagnostics(merged, diagnosticCollection, diagFallback);
 
                         sidebarProvider.postMessage({
                             type: 'analysis-result',
@@ -206,10 +244,11 @@ export function activate(context: vscode.ExtensionContext) {
                         } satisfies HostMessage);
 
                         const skippedMsg = cachedCount > 0 ? ` (${cachedCount} unchanged, skipped)` : '';
+                        const failureMsg = failureCount > 0 ? ` · ${failureCount} failed` : '';
                         vscode.window.showInformationMessage(
                             totalIssues > 0
-                                ? `Workspace analysis — ${totalIssues} issue${totalIssues > 1 ? 's' : ''} found.${skippedMsg}`
-                                : `Workspace analysis complete — no issues found.${skippedMsg}`
+                                ? `Workspace analysis — ${totalIssues} issue${totalIssues > 1 ? 's' : ''} found.${skippedMsg}${failureMsg}`
+                                : `Workspace analysis complete — no issues found.${skippedMsg}${failureMsg}`
                         );
                     } catch (e) {
                         sidebarProvider.postMessage({ type: 'analysis-error' });
