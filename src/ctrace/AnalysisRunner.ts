@@ -12,6 +12,11 @@ export interface RunResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
+/** Maximum output size per stream (stdout or stderr) accepted from ctrace.
+ *  child_process.exec/execFile applies maxBuffer independently to each stream,
+ *  so the process can produce up to 2× this value in total (10 MB stdout +
+ *  10 MB stderr) before either stream triggers a "maxBuffer exceeded" error. */
+const MAX_OUTPUT_BYTES   = 10 * 1024 * 1024;
 
 /**
  * Executes a built command and returns stdout/stderr.
@@ -43,9 +48,18 @@ export function runCommand(
             resolve(result);
         };
 
+        // Set when a kill is requested (timeout or cancellation). If the child
+        // process is spawned AFTER this flag goes true (e.g. during an async
+        // chmod call) it must be killed immediately upon creation.
+        let killRequested = false;
+
         const kill = (reason: string) => {
+            killRequested = true;
             if (child && !child.killed) {
-                child.kill();
+                // Use SIGKILL so the entire WSL sh -c "..." process tree is
+                // terminated immediately. SIGTERM can leave child processes
+                // (tscancode, ikos …) orphaned when the shell ignores it.
+                child.kill('SIGKILL');
             }
             finish({ stdout: '', stderr: reason, exitCode: null, killed: true });
         };
@@ -57,19 +71,23 @@ export function runCommand(
         const cancelListener = token?.onCancellationRequested(() => kill('Analysis cancelled by user.'));
 
         // If already cancelled before we even spawned, bail immediately.
+        // Use finish() (not resolve() directly) so that `settled` is set to true,
+        // keeping state consistent with every other exit path.
         if (token?.isCancellationRequested) {
-            clearTimeout(timer);
-            resolve({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
+            finish({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
             return;
         }
 
         const done = (err: cp.ExecException | cp.ExecFileException | null, stdout: string, stderr: string) => {
+            // `code` is a number on normal exits but a signal name string on
+            // signal-kills (e.g. "SIGKILL").  Only forward it as an exit code
+            // when it is actually numeric to avoid NaN propagating downstream.
+            const rawCode = (err as cp.ExecFileException)?.code;
+            const exitCode = (typeof rawCode === 'number') ? rawCode : null;
             finish({
                 stdout: stdout ?? '',
                 stderr: stderr ?? '',
-                exitCode: (err as cp.ExecFileException)?.code != null
-                    ? Number((err as cp.ExecFileException).code)
-                    : null,
+                exitCode,
             });
         };
 
@@ -83,10 +101,16 @@ export function runCommand(
                     return;
                 }
                 if (settled) { return; } // cancelled during chmod
-                child = cp.execFile(built.file!, built.args!, { cwd }, done);
+                child = cp.execFile(built.file!, built.args!, { cwd, maxBuffer: MAX_OUTPUT_BYTES }, done);
+                // Guard: kill was requested while chmod was running (async gap).
+                // `kill()` already set `killRequested` but couldn't reach `child`
+                // since it was undefined at that point. Kill it now.
+                if (killRequested && !child.killed) {
+                    child.kill('SIGKILL');
+                }
             });
         } else if (built.command) {
-            child = cp.exec(built.command, { cwd }, done);
+            child = cp.exec(built.command, { cwd, maxBuffer: MAX_OUTPUT_BYTES }, done);
         } else {
             finish({ stdout: '', stderr: 'No command to run.', exitCode: 1 });
         }

@@ -110,7 +110,7 @@
 
         const level    = (res.level || 'warning').toLowerCase();
         const ruleId   = res.ruleId || 'Rule';
-        const message  = res.message ? res.message.text : 'Unknown issue';
+        const message  = (res.message && res.message.text) ? res.message.text : 'Unknown issue';
         const loc      = res.locations && res.locations[0];
 
         let locText  = '';
@@ -120,7 +120,7 @@
         if (loc && loc.physicalLocation) {
             const pl = loc.physicalLocation;
             if (pl.artifactLocation && pl.artifactLocation.uri) {
-                const parts = pl.artifactLocation.uri.split('/');
+                const parts = pl.artifactLocation.uri.split(/[\/\\]/);
                 locText  = parts[parts.length - 1];
                 filePath = pl.artifactLocation.uri;
             }
@@ -152,7 +152,8 @@
         `;
 
         li.addEventListener('click', () => {
-            vscode.postMessage({ type: 'open-file', path: filePath, line: Math.max(0, line - 1) });
+            const safeLine = (typeof line === 'number' && isFinite(line)) ? Math.max(0, line - 1) : 0;
+            vscode.postMessage({ type: 'open-file', path: filePath, line: safeLine });
         });
 
         vulnList.appendChild(li);
@@ -166,7 +167,7 @@
         return str
             .replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;') .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+            .replace(/'/g, '&#039;').replace(/`/g, '&#x60;');
     }
 
 }());
