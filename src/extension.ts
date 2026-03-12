@@ -108,6 +108,9 @@ export function activate(context: vscode.ExtensionContext) {
             await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Notification, title: 'Running Ctrace Analysis…', cancellable: true },
                 async (_progress, token) => {
+                    // Ensure no stale report exists from a previous crashed session
+                    await tryDelete(reportPath);
+
                     let stdout = '', stderr = '';
                     let exitCode: number | null = null;
                     try {

@@ -69,7 +69,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this._viewDisposables.push(
             // Incoming webview messages
             webviewView.webview.onDidReceiveMessage(
-                (data: WebviewMessage) => this._handleMessage(data)
+                (data: unknown) => this._handleMessage(data)
             ),
             // Active editor tracking
             this._setupActiveFileTracking(webviewView),
@@ -83,7 +83,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
     // ── Private: message dispatch ─────────────────────────────────────────────
 
-    private _handleMessage(data: WebviewMessage): void {
+    private _handleMessage(data: unknown): void {
         // onDidReceiveMessage crosses an untyped JS boundary — data can be
         // anything (null, a string, a number …).  Guard before touching any
         // property to prevent a TypeError from crashing the extension host.
