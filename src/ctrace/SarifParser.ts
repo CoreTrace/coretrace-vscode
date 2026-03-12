@@ -33,11 +33,7 @@ export async function parseSarifOutput(stdout: string, reportFilePath?: string):
     if (!sarif) {
         const sarifBlock = extractLastJsonBlock(cleanedStdout, '"$schema"');
         if (sarifBlock) {
-            try {
-                sarif = JSON.parse(sarifBlock) as SarifLog;
-            } catch (e) {
-                console.error('[SarifParser] Failed to parse SARIF block from stdout:', e);
-            }
+            sarif = sarifBlock as SarifLog;
         }
     }
 
@@ -47,13 +43,9 @@ export async function parseSarifOutput(stdout: string, reportFilePath?: string):
     if (!hasResults) {
         const stackBlock = extractStackAnalyzerBlock(cleanedStdout);
         if (stackBlock) {
-            try {
-                const obj = JSON.parse(stackBlock) as StackAnalyzerOutput;
-                if (obj.diagnostics && Array.isArray(obj.diagnostics) && obj.diagnostics.length > 0) {
-                    return convertStackAnalyzerToSarif(obj);
-                }
-            } catch (e) {
-                console.error('[SarifParser] Failed to parse stack-analyzer JSON:', e);
+            const obj = stackBlock as StackAnalyzerOutput;
+            if (obj.diagnostics && Array.isArray(obj.diagnostics) && obj.diagnostics.length > 0) {
+                return convertStackAnalyzerToSarif(obj);
             }
         }
     }
@@ -75,7 +67,7 @@ function stripAnsi(text: string): string {
     return text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '');
 }
 
-function extractLastJsonBlock(text: string, signature: string): string | null {
+function extractLastJsonBlock(text: string, signature: string): unknown {
     const sigIdx = text.lastIndexOf(signature);
     if (sigIdx === -1) { return null; }
     const openBrace = text.lastIndexOf('{', sigIdx);
@@ -88,7 +80,7 @@ function extractLastJsonBlock(text: string, signature: string): string | null {
  * The signature "tool": "ctrace-stack-analyzer" lives inside a nested "meta"
  * object, so we must walk back to the *outer* opening brace.
  */
-function extractStackAnalyzerBlock(text: string): string | null {
+function extractStackAnalyzerBlock(text: string): unknown {
     const toolSig = '"tool": "ctrace-stack-analyzer"';
     const toolIdx = text.lastIndexOf(toolSig);
     if (toolIdx === -1) { return null; }
@@ -108,9 +100,11 @@ function extractStackAnalyzerBlock(text: string): string | null {
  * Finds the closing brace of a JSON object that starts at `startIndex`,
  * correctly skipping brace characters that appear inside JSON string literals
  * (e.g. `"value": "}"` must not decrement the balance counter).
- * Validates the extracted substring with `JSON.parse` before returning it.
+ * Parses and returns the extracted object, or null if the slice is not valid
+ * JSON.  Parsing happens here so callers can use the result directly without
+ * a second JSON.parse call.
  */
-function matchBraces(text: string, startIndex: number): string | null {
+function matchBraces(text: string, startIndex: number): unknown {
     let i = startIndex;
     let balance = 0;
     while (i < text.length) {
@@ -129,13 +123,10 @@ function matchBraces(text: string, startIndex: number): string | null {
         else if (ch === '}') {
             balance--;
             if (balance === 0) {
-                const candidate = text.substring(startIndex, i + 1);
                 try {
-                    JSON.parse(candidate);
-                    return candidate;
+                    return JSON.parse(text.substring(startIndex, i + 1));
                 } catch {
-                    // Extracted slice is not valid JSON — give up rather than
-                    // returning corrupt data to the caller.
+                    // Extracted slice is not valid JSON — give up.
                     return null;
                 }
             }

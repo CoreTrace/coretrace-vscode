@@ -12,7 +12,10 @@ export interface RunResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
-/** Maximum combined stdout+stderr size accepted from ctrace (10 MB). */
+/** Maximum output size per stream (stdout or stderr) accepted from ctrace.
+ *  child_process.exec/execFile applies maxBuffer independently to each stream,
+ *  so the process can produce up to 2× this value in total (10 MB stdout +
+ *  10 MB stderr) before either stream triggers a "maxBuffer exceeded" error. */
 const MAX_OUTPUT_BYTES   = 10 * 1024 * 1024;
 
 /**
