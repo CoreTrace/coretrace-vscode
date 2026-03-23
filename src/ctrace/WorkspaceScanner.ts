@@ -177,10 +177,14 @@ export async function scanWorkspace(): Promise<ScanResult> {
 
     // Remove stale cache entries for files that no longer exist
     const currentPaths = new Set(files.map(f => f.fsPath));
+    const keysToDelete: string[] = [];
     for (const fsPath of _fileCache.keys()) {
         if (!currentPaths.has(fsPath)) {
-            _fileCache.delete(fsPath);
+            keysToDelete.push(fsPath);
         }
+    }
+    for (const fsPath of keysToDelete) {
+        _fileCache.delete(fsPath);
     }
 
     return { compileCommandsPath, files, changedFiles, cachedSarifByFile };
