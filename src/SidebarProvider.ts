@@ -142,8 +142,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // ── Private: file navigation ──────────────────────────────────────────────
 
     private async _openFileAtLine(rawPath: string, line: number): Promise<void> {
+        let uri: vscode.Uri;
+        if (rawPath.startsWith('file://')) {
+            uri = vscode.Uri.parse(rawPath);
+            rawPath = uri.fsPath; // extract the native FS path so WSL/Workspace resolution can still act if necessary
+        } else if (!path.isAbsolute(rawPath)) {
+            // Un outil comme ctrace (ou compile_commands) peut renvoyer un chemin relatif "main.c".
+            // Si le chemin n'est pas absolu, on tente de le résoudre dans le dossier racine du workspace.
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                // S'il ne correspond à rien, la fonction d'ouverture de document échouera proprement avec une erreur claire.
+                rawPath = path.join(folders[0].uri.fsPath, rawPath);
+            }
+        }
+
         const resolvedPath = this._resolveFilePath(rawPath);
-        const uri    = vscode.Uri.file(resolvedPath);
+        uri = vscode.Uri.file(resolvedPath);
+
         const doc    = await vscode.workspace.openTextDocument(uri);
         const editor = await vscode.window.showTextDocument(doc);
         const range  = new vscode.Range(line, 0, line, 0);

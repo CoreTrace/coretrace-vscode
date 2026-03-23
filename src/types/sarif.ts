@@ -115,6 +115,7 @@ export interface StackAnalyzerOutput {
     meta: {
         tool: 'ctrace-stack-analyzer';
         inputFile?: string;
+        inputFiles?: string[];
         [key: string]: unknown;
     };
     diagnostics: StackAnalyzerDiagnostic[];
@@ -127,6 +128,7 @@ export interface StackAnalyzerDiagnostic {
         message?: string;
     };
     location?: {
+        file?: string;
         startLine?: number;
         startColumn?: number;
         endLine?: number;

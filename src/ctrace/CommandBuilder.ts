@@ -95,8 +95,10 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
  * - Windows: WSL-aware execution with automatic distro detection and temp-file fallback
  *
  * When `compileCommands` is true, `inputFilePath` is treated as a path to a
- * `compile_commands.json` database and `--compile-commands` is passed instead
- * of `--input`.
+ * `compile_commands.json` database and is still passed through `--input`.
+ *
+ * Note: current ctrace CLI (see `ctrace --help`) does not expose a
+ * `--compile-commands` flag, so we cannot use a dedicated option here.
  *
  * Async because the Windows fallback path copies files to the system temp
  * directory using non-blocking I/O rather than blocking the extension host.
@@ -117,12 +119,18 @@ export async function buildCommand(
 
 function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string, compileCommands: boolean): BuiltCommand {
     const validatedParams = parseAndValidateParams(params);
-    const inputFlag = compileCommands ? '--compile-commands' : '--input';
+    // ctrace accepts compile_commands.json through --input for file discovery,
+    // and requires --compile-commands for the stack analyzer configuration.
+    const args = ['--input', inputFilePath, ...validatedParams, '--sarif-format'];
+    if (compileCommands) {
+        args.push('--compile-commands', inputFilePath);
+    }
+    
     // Use execFile — no shell spawn, so shell metacharacters in any argument
     // can never be interpreted as commands.
     return {
         file: ctracePath,
-        args: [inputFlag, inputFilePath, ...validatedParams, '--sarif-format'],
+        args,
         tempFiles: [],
     };
 }
@@ -212,9 +220,11 @@ function trySmartDistroExecution(
         // safeDistroName has '"', "'", '`' and '\' stripped, so embedding
         // it inside "..." is safe even for names that contain spaces.
         const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
-        const inputFlag = compileCommands ? '--compile-commands' : '--input';
+        // ctrace accepts compile_commands.json through --input for file discovery,
+        // and requires --compile-commands for stack analyzer configuration.
+        const extraArgs = compileCommands ? `--compile-commands ${shellEscapeArg(finalInput)}` : '';
 
-        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} ${inputFlag} ${shellEscapeArg(finalInput)} ${validatedParams} --sarif-format"`;
+        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)} ${extraArgs} ${validatedParams} --sarif-format"`;
     } catch {
         return null;
     }
@@ -262,8 +272,10 @@ async function buildFallbackCommand(ctracePath: string, inputFilePath: string, p
     const wInput = toWslPath(tempInput);
     // Validate params before embedding in the shell string.
     const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
-    const inputFlag = compileCommands ? '--compile-commands' : '--input';
+    // ctrace accepts compile_commands.json through --input for file discovery,
+    // and requires --compile-commands for stack analyzer configuration.
+    const extraArgs = compileCommands ? `--compile-commands ${shellEscapeArg(wInput)}` : '';
 
-    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} ${inputFlag} ${shellEscapeArg(wInput)} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
+    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)} ${extraArgs} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }

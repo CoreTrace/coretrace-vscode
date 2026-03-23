@@ -149,7 +149,8 @@ export function activate(context: vscode.ExtensionContext) {
                             output.appendLine('[workspace] compile_commands mode');
                             if (result.stdout) { output.appendLine(result.stdout); }
                             if (result.stderr) { output.appendLine('[stderr] ' + result.stderr); }
-                            const sarif = await parseSarifOutput(result.stdout, reportPath);
+                            const combinedOutput = result.stdout + '\n' + (result.stderr || '');
+                            const sarif = await parseSarifOutput(combinedOutput, reportPath);
                             if (sarif) {
                                 merged.runs.push(...sarif.runs);
                                 totalIssues += countResults(sarif);
@@ -188,7 +189,8 @@ export function activate(context: vscode.ExtensionContext) {
                                     }
 
                                     if (!result.killed) {
-                                        const sarif = await parseSarifOutput(result.stdout, reportPath);
+                                        const combinedOutput = result.stdout + '\n' + (result.stderr || '');
+                                        const sarif = await parseSarifOutput(combinedOutput, reportPath);
                                         if (sarif) {
                                             merged.runs.push(...sarif.runs);
                                             totalIssues += countResults(sarif);
@@ -368,7 +370,8 @@ export function activate(context: vscode.ExtensionContext) {
                         output.appendLine(`[exit code: ${exitCode ?? 0}]`);
 
                         // Parse results
-                        const sarif = await parseSarifOutput(stdout, reportPath);
+                        const combinedOutput = stdout + '\n' + (stderr || '');
+                        const sarif = await parseSarifOutput(combinedOutput, reportPath);
 
                         if (!sarif) {
                             handleNoResults(stdout, stderr, exitCode);
