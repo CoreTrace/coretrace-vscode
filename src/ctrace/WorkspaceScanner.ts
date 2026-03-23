@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs     from 'fs';
 import * as path   from 'path';
 import * as vscode from 'vscode';
+import type { SarifRun } from '../types/sarif';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -19,6 +20,8 @@ export interface ScanResult {
     files: WorkspaceFile[];
     /** Subset of files whose content changed since the last scan */
     changedFiles: WorkspaceFile[];
+    /** Cached SARIF runs for unchanged files, keyed by fsPath */
+    cachedSarifByFile: Map<string, SarifRun[]>;
 }
 
 // ─── File-hash cache ──────────────────────────────────────────────────────────
@@ -41,8 +44,36 @@ interface CachedFileMetadata {
  */
 const _fileCache = new Map<string, CachedFileMetadata>();
 
+// ─── SARIF result cache ────────────────────────────────────────────────────────
+
+/**
+ * Cached SARIF runs for individual files, keyed by `fsPath@hash`.
+ * Allows us to preserve analysis results for unchanged files when using file-by-file mode.
+ * When a file is skipped (unchanged), its cached SARIF is merged into the combined result.
+ */
+const _sarifCache = new Map<string, SarifRun[]>();
+
+/**
+ * Store SARIF runs for a file (keyed by its current hash).
+ * Called after successfully analyzing a file to cache its results for future runs.
+ */
+export function cacheSarifForFile(fsPath: string, fileHash: string, runs: SarifRun[]): void {
+    const key = `${fsPath}@${fileHash}`;
+    _sarifCache.set(key, runs);
+}
+
+/**
+ * Retrieve cached SARIF runs for a file by its fsPath and hash.
+ * Returns undefined if no cached results exist for this exact file version.
+ */
+export function getCachedSarif(fsPath: string, fileHash: string): SarifRun[] | undefined {
+    const key = `${fsPath}@${fileHash}`;
+    return _sarifCache.get(key);
+}
+
 export function clearCache(): void {
     _fileCache.clear();
+    _sarifCache.clear();
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────
@@ -63,7 +94,7 @@ const EXCLUDE_GLOB = '{**/node_modules/**,**/build/**,**/out/**,**/dist/**,**/.g
 export async function scanWorkspace(): Promise<ScanResult> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) {
-        return { compileCommandsPath: null, files: [], changedFiles: [] };
+        return { compileCommandsPath: null, files: [], changedFiles: [], cachedSarifByFile: new Map() };
     }
 
     // 1 — Look for compile_commands.json at every workspace root or build directory
@@ -98,6 +129,7 @@ export async function scanWorkspace(): Promise<ScanResult> {
     const uris = await vscode.workspace.findFiles(C_CPP_GLOB, EXCLUDE_GLOB);
     const files: WorkspaceFile[]   = [];
     const changedFiles: WorkspaceFile[] = [];
+    const cachedSarifByFile = new Map<string, SarifRun[]>();
 
     for (const uri of uris) {
         const fsPath = uri.fsPath;
@@ -133,6 +165,12 @@ export async function scanWorkspace(): Promise<ScanResult> {
         const cached = _fileCache.get(fsPath);
         if (!cached || cached.hash !== hash) {
             changedFiles.push(entry);
+        } else {
+            // File is unchanged — try to retrieve its cached SARIF results
+            const cachedSarif = getCachedSarif(fsPath, hash);
+            if (cachedSarif) {
+                cachedSarifByFile.set(fsPath, cachedSarif);
+            }
         }
         _fileCache.set(fsPath, metadata);
     }
@@ -145,7 +183,7 @@ export async function scanWorkspace(): Promise<ScanResult> {
         }
     }
 
-    return { compileCommandsPath, files, changedFiles };
+    return { compileCommandsPath, files, changedFiles, cachedSarifByFile };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics }  from './ctrace/DiagnosticsManager';
-import { scanWorkspace, clearCache } from './ctrace/WorkspaceScanner';
+import { scanWorkspace, clearCache, cacheSarifForFile } from './ctrace/WorkspaceScanner';
 import type { SarifLog } from './types/sarif';
 
 // Parameters passed by the webview when triggering an analysis run.
@@ -195,6 +195,11 @@ export function activate(context: vscode.ExtensionContext) {
                                         if (sarif) {
                                             merged.runs.push(...sarif.runs);
                                             totalIssues += countResults(sarif);
+                                            // Cache the SARIF runs for this file so unchanged files
+                                            // in future runs can use their cached results
+                                            if (sarif.runs.length > 0) {
+                                                cacheSarifForFile(file.fsPath, file.hash, sarif.runs);
+                                            }
                                         }
                                     }
 
@@ -239,6 +244,16 @@ export function activate(context: vscode.ExtensionContext) {
                         const diagFallback = scan.compileCommandsPath
                             ? path.dirname(scan.compileCommandsPath)
                             : vscode.workspace.workspaceFolders![0].uri.fsPath;
+
+                        // In file-by-file mode, merge cached SARIF results for unchanged files
+                        // so they aren't lost when updateDiagnostics() clears the collection.
+                        if (!usingCompileCommands && scan.cachedSarifByFile.size > 0) {
+                            for (const [, cachedRuns] of scan.cachedSarifByFile) {
+                                merged.runs.push(...cachedRuns);
+                                totalIssues += cachedRuns.reduce((sum, run) => sum + (run.results?.length ?? 0), 0);
+                            }
+                        }
+
                         updateDiagnostics(merged, diagnosticCollection, diagFallback);
 
                         sidebarProvider.postMessage({
