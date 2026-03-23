@@ -24,13 +24,25 @@ export interface ScanResult {
 // ─── File-hash cache ──────────────────────────────────────────────────────────
 
 /**
- * In-memory cache: fsPath → content-hash.
- * Lives for the extension session; cleared on `clearCache()`.
+ * Cached file metadata: hash + stat info.
+ * The stat info (size, mtime) enables cheap change detection without reading/hashing.
  */
-const _hashCache = new Map<string, string>();
+interface CachedFileMetadata {
+    hash: string;
+    size: number;
+    mtime: number;
+}
+
+/**
+ * In-memory cache: fsPath → { hash, size, mtime }.
+ * Lives for the extension session; cleared on `clearCache()`.
+ * Stat-based cache greatly reduces I/O and CPU cost on large workspaces by
+ * skipping expensive hash computation for files whose size and mtime haven't changed.
+ */
+const _fileCache = new Map<string, CachedFileMetadata>();
 
 export function clearCache(): void {
-    _hashCache.clear();
+    _fileCache.clear();
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────
@@ -90,9 +102,26 @@ export async function scanWorkspace(): Promise<ScanResult> {
     for (const uri of uris) {
         const fsPath = uri.fsPath;
         let hash: string;
+        let metadata: CachedFileMetadata;
+        
         try {
-            const buf = await fs.promises.readFile(fsPath);
-            hash = crypto.createHash('sha1').update(buf).digest('hex');
+            // Cheap change detection: check file size and mtime first.
+            // Skip expensive hash computation if stats haven't changed.
+            const stat = await fs.promises.stat(fsPath);
+            const currentSize = stat.size;
+            const currentMtime = stat.mtimeMs;
+            const cached = _fileCache.get(fsPath);
+
+            if (cached && cached.size === currentSize && cached.mtime === currentMtime) {
+                // File stat hasn't changed — reuse cached hash without re-reading.
+                hash = cached.hash;
+            } else {
+                // File is new or modified — read and hash.
+                const buf = await fs.promises.readFile(fsPath);
+                hash = crypto.createHash('sha1').update(buf).digest('hex');
+            }
+
+            metadata = { hash, size: currentSize, mtime: currentMtime };
         } catch {
             // Unreadable file (permission error, race with deletion, …) — skip.
             continue;
@@ -101,18 +130,18 @@ export async function scanWorkspace(): Promise<ScanResult> {
         const entry: WorkspaceFile = { fsPath, hash };
         files.push(entry);
 
-        const cached = _hashCache.get(fsPath);
-        if (cached !== hash) {
+        const cached = _fileCache.get(fsPath);
+        if (!cached || cached.hash !== hash) {
             changedFiles.push(entry);
-            _hashCache.set(fsPath, hash);
         }
+        _fileCache.set(fsPath, metadata);
     }
 
     // Remove stale cache entries for files that no longer exist
     const currentPaths = new Set(files.map(f => f.fsPath));
-    for (const cached of _hashCache.keys()) {
-        if (!currentPaths.has(cached)) {
-            _hashCache.delete(cached);
+    for (const fsPath of _fileCache.keys()) {
+        if (!currentPaths.has(fsPath)) {
+            _fileCache.delete(fsPath);
         }
     }
 
