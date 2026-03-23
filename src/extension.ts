@@ -95,6 +95,7 @@ export function activate(context: vscode.ExtensionContext) {
             const reportPath    = path.join(extensionPath, 'ctrace-report.txt');
 
             output.show(true);
+            output.clear();
             await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Notification, title: 'Ctrace — scanning workspace…', cancellable: true },
                 async (progress, token) => {
