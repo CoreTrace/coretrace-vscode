@@ -177,14 +177,27 @@ export async function scanWorkspace(): Promise<ScanResult> {
 
     // Remove stale cache entries for files that no longer exist
     const currentPaths = new Set(files.map(f => f.fsPath));
-    const keysToDelete: string[] = [];
+    const fileKeysToDelete: string[] = [];
     for (const fsPath of _fileCache.keys()) {
         if (!currentPaths.has(fsPath)) {
-            keysToDelete.push(fsPath);
+            fileKeysToDelete.push(fsPath);
         }
     }
-    for (const fsPath of keysToDelete) {
+    for (const fsPath of fileKeysToDelete) {
         _fileCache.delete(fsPath);
+    }
+
+    // Also clean up SARIF cache entries for files that no longer exist
+    // SARIF cache keys are in format "fsPath@hash"
+    const sarifKeysToDelete: string[] = [];
+    for (const cacheKey of _sarifCache.keys()) {
+        const fsPath = cacheKey.split('@')[0];
+        if (!currentPaths.has(fsPath)) {
+            sarifKeysToDelete.push(cacheKey);
+        }
+    }
+    for (const cacheKey of sarifKeysToDelete) {
+        _sarifCache.delete(cacheKey);
     }
 
     return { compileCommandsPath, files, changedFiles, cachedSarifByFile };
