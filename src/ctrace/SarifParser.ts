@@ -190,12 +190,20 @@ function matchBraces(text: string, startIndex: number): unknown {
 
     while (i < text.length) {
         const ch = text[i];
+        
+        // Handle string literals — skip to closing quote, accounting for escapes
         if (ch === '"') {
             i++;
-            // Consume until closing quote
             while (i < text.length) {
-                if (text[i] === '\\') { i += 2; continue; } // escaped character
-                if (text[i] === '"') { i++; break; }         // end of string
+                if (text[i] === '\\') {
+                    // Skip both the backslash and the next character (if it exists)
+                    i += (i + 1 < text.length) ? 2 : 1;
+                    continue;
+                }
+                if (text[i] === '"') {
+                    i++; // Move past closing quote
+                    break;
+                }
                 i++;
             }
             continue;
@@ -208,12 +216,13 @@ function matchBraces(text: string, startIndex: number): unknown {
                 try {
                     return JSON.parse(text.substring(startIndex, i + 1));
                 } catch {
-                    return null; // Invalid schema payload
+                    return null;
                 }
             }
         }
         i++;
     }
+    
     return null;
 }
 
