@@ -54,12 +54,30 @@ export async function scanWorkspace(): Promise<ScanResult> {
         return { compileCommandsPath: null, files: [], changedFiles: [] };
     }
 
-    // 1 — Look for compile_commands.json at every workspace root
+    // 1 — Look for compile_commands.json at every workspace root or build directory
     let compileCommandsPath: string | null = null;
     for (const folder of folders) {
-        const candidate = path.join(folder.uri.fsPath, 'compile_commands.json');
-        if (await fileExists(candidate)) {
-            compileCommandsPath = candidate;
+        const rootCandidate = path.join(folder.uri.fsPath, 'compile_commands.json');
+        const buildCandidate = path.join(folder.uri.fsPath, 'build', 'compile_commands.json');
+        
+        // Also check CMake Tools build directory configuration if present
+        let cmakeBuildCandidate: string | null = null;
+        const config = vscode.workspace.getConfiguration('cmake', folder.uri);
+        let buildDir = config.get<string>('buildDirectory');
+        if (buildDir) {
+            // Resolve standard variable substitution for ${workspaceFolder}
+            buildDir = buildDir.replace(/\${workspaceFolder}/g, folder.uri.fsPath);
+            cmakeBuildCandidate = path.resolve(folder.uri.fsPath, buildDir, 'compile_commands.json');
+        }
+
+        if (await fileExists(rootCandidate)) {
+            compileCommandsPath = rootCandidate;
+            break;
+        } else if (cmakeBuildCandidate && await fileExists(cmakeBuildCandidate)) {
+            compileCommandsPath = cmakeBuildCandidate;
+            break;
+        } else if (await fileExists(buildCandidate)) {
+            compileCommandsPath = buildCandidate;
             break;
         }
     }
