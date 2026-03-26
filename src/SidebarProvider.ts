@@ -17,14 +17,15 @@ type WebviewMessage =
 
 // Commands the webview is explicitly allowed to trigger.
 // Any other value is blocked and logged.
-const ALLOWED_COMMANDS = new Set(['ctrace.runAnalysis']);
+const ALLOWED_COMMANDS = new Set(['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis']);
 
 // ─── Extension → Webview message protocol ────────────────────────────────────
 
 export type HostMessage =
-    | { type: 'analysis-result'; data: unknown  }
-    | { type: 'analysis-error'                  }
-    | { type: 'active-file';     name: string | null };
+    | { type: 'analysis-result';     data: unknown                                            }
+    | { type: 'analysis-error'                                                                }
+    | { type: 'active-file';         name: string | null                                      }
+    | { type: 'workspace-progress';  total: number; changed: number; cached: number; done: number };
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -141,8 +142,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // ── Private: file navigation ──────────────────────────────────────────────
 
     private async _openFileAtLine(rawPath: string, line: number): Promise<void> {
+        let uri: vscode.Uri;
+        if (rawPath.startsWith('file://')) {
+            uri = vscode.Uri.parse(rawPath);
+            rawPath = uri.fsPath; // extract the native FS path so WSL/Workspace resolution can still act if necessary
+        } else if (!path.isAbsolute(rawPath)) {
+            // A tool like ctrace (or compile_commands) might return a relative path like "main.c".
+            // If the path is not absolute, attempt to resolve it against the workspace root folder.
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                // If it resolves to a non-existent file, the openTextDocument call will fail cleanly with a clear error.
+                rawPath = path.join(folders[0].uri.fsPath, rawPath);
+            }
+        }
+
         const resolvedPath = this._resolveFilePath(rawPath);
-        const uri    = vscode.Uri.file(resolvedPath);
+        uri = vscode.Uri.file(resolvedPath);
+
         const doc    = await vscode.workspace.openTextDocument(uri);
         const editor = await vscode.window.showTextDocument(doc);
         const range  = new vscode.Range(line, 0, line, 0);
@@ -246,10 +262,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
             <span class="header-title">Ctrace Audit</span>
         </div>
 
-        <!-- Current file -->
+        <!-- Current file (hidden in workspace mode) -->
         <div class="file-pill" id="file-pill">
             <i data-lucide="file-code-2"></i>
             <span id="file-label">Open a C/C++ file to analyse</span>
+        </div>
+
+        <!-- Workspace file count (visible in workspace mode) -->
+        <div class="ws-pill hidden" id="ws-pill">
+            <i data-lucide="folder-open"></i>
+            <span id="ws-label">Workspace — all C/C++ files</span>
+        </div>
+
+        <!-- Workspace progress bar (visible during workspace analysis) -->
+        <div class="ws-progress hidden" id="ws-progress">
+            <div class="ws-progress-bar-track">
+                <div class="ws-progress-bar" id="ws-progress-bar"></div>
+            </div>
+            <span class="ws-progress-text" id="ws-progress-text"></span>
+        </div>
+
+        <!-- Scope selector (above run button) -->
+        <div class="scope-selector" id="scope-selector">
+            <button class="scope-option active" id="scope-file">
+                <i data-lucide="file-code-2"></i>
+                <span>Active file</span>
+            </button>
+            <button class="scope-option" id="scope-ws">
+                <i data-lucide="folder-open"></i>
+                <span>Workspace</span>
+            </button>
         </div>
 
         <!-- Run button -->
