@@ -35,3 +35,11 @@ jobs:
 
       - name: Compile Extension
         run: npm run compile
+
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm test
+
+      - name: Run tests (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: npm test

@@ -1,0 +1,1 @@
+import * as assert from "assert";\nimport * as vscode from "vscode";\n\nsuite("Extension Test Suite", () => {\n  vscode.window.showInformationMessage("Start all tests.");\n\n  test("Sample test", () => {\n    assert.strictEqual(-1, [1, 2, 3].indexOf(5));\n    assert.strictEqual(-1, [1, 2, 3].indexOf(0));\n  });\n});

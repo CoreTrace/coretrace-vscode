@@ -49,12 +49,20 @@
     "vscode:prepublish": "npm run compile",
     "compile": "npm run copy-lucide && tsc -p ./",
     "watch": "npm run copy-lucide && tsc -watch -p ./",
-    "copy-lucide": "node scripts/copy-lucide.cjs"
+    "copy-lucide": "node scripts/copy-lucide.cjs",
+    "test": "vscode-test"
   },
   "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^18.19.130",
     "@types/vscode": "^1.80.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "chai": "^4.5.0",
     "lucide": "^0.575.0",
+    "mocha": "^11.7.5",
+    "ts-node": "^10.9.2",
     "typescript": "^5.1.3"
   }
 }
