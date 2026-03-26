@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches:
-      - main, 5-feat-add-workflow-ci
+      - main
+      - 5-feat-add-workflow-ci
   pull_request:
     branches:
-      - main, 5-feat-add-workflow-ci
+      - main
+      - 5-feat-add-workflow-ci
 
 jobs:
   build:
