@@ -114,10 +114,9 @@ export function activate(context: vscode.ExtensionContext) {
                         // database and runs once — it cannot skip individual files based
                         // on our hash cache, so reporting cached counts would be misleading.
                         // In file-by-file mode the hash cache is meaningful and we only
-                        // invoke ctrace for files whose content actually changed.
+                        // invoke ctrace for files whose content actually changed (or failed previously).
                         const usingCompileCommands = !!scan.compileCommandsPath;
-                        const toAnalyse   = usingCompileCommands ? scan.files
-                                          : (scan.changedFiles.length > 0 ? scan.changedFiles : scan.files);
+                        const toAnalyse   = usingCompileCommands ? scan.files : scan.changedFiles;
                         const cachedCount = usingCompileCommands ? 0
                                           : scan.files.length - toAnalyse.length;
 

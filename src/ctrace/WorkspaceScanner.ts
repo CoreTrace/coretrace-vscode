@@ -170,6 +170,10 @@ export async function scanWorkspace(): Promise<ScanResult> {
             const cachedSarif = getCachedSarif(fsPath, hash);
             if (cachedSarif) {
                 cachedSarifByFile.set(fsPath, cachedSarif);
+            } else {
+                // File hasn't changed but has no cached SARIF (e.g. previous run failed).
+                // Add it to changedFiles so we retry analysis.
+                changedFiles.push(entry);
             }
         }
         _fileCache.set(fsPath, metadata);
