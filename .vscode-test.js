@@ -1,1 +1,2 @@
-const { defineConfig } = require('@vscode/test-cli');\nmodule.exports = defineConfig([{ label: 'unit', files: 'out/test/**/*.test.js' }]);
+const { defineConfig } = require('@vscode/test-cli');
+module.exports = defineConfig([{ label: 'unit', files: 'out/test/**/*.test.js' }]);
