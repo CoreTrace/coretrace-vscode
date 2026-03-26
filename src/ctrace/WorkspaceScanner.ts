@@ -14,7 +14,7 @@ export interface WorkspaceFile {
 }
 
 export interface ScanResult {
-    /** compile_commands.json path if found at workspace root, else null */
+    /** compile_commands.json path if found (in root, via CMake Tools config, or in /build/), else null */
     compileCommandsPath: string | null;
     /** All C/C++ source files found in the workspace */
     files: WorkspaceFile[];
