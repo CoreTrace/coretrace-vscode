@@ -47,7 +47,7 @@ const _fileCache = new Map<string, CachedFileMetadata>();
 // ─── SARIF result cache ────────────────────────────────────────────────────────
 
 /**
- * Cached SARIF runs for individual files, keyed by `fsPath@hash`.
+ * Cached SARIF runs for individual files, keyed by `fsPath\0hash`.
  * Allows us to preserve analysis results for unchanged files when using file-by-file mode.
  * When a file is skipped (unchanged), its cached SARIF is merged into the combined result.
  */
@@ -58,7 +58,7 @@ const _sarifCache = new Map<string, SarifRun[]>();
  * Called after successfully analyzing a file to cache its results for future runs.
  */
 export function cacheSarifForFile(fsPath: string, fileHash: string, runs: SarifRun[]): void {
-    const key = `${fsPath}@${fileHash}`;
+    const key = `${fsPath}\0${fileHash}`;
     _sarifCache.set(key, runs);
 }
 
@@ -67,7 +67,7 @@ export function cacheSarifForFile(fsPath: string, fileHash: string, runs: SarifR
  * Returns undefined if no cached results exist for this exact file version.
  */
 export function getCachedSarif(fsPath: string, fileHash: string): SarifRun[] | undefined {
-    const key = `${fsPath}@${fileHash}`;
+    const key = `${fsPath}\0${fileHash}`;
     return _sarifCache.get(key);
 }
 
@@ -188,10 +188,10 @@ export async function scanWorkspace(): Promise<ScanResult> {
     }
 
     // Also clean up SARIF cache entries for files that no longer exist
-    // SARIF cache keys are in format "fsPath@hash"
+    // SARIF cache keys are in format "fsPath\0hash"
     const sarifKeysToDelete: string[] = [];
     for (const cacheKey of _sarifCache.keys()) {
-        const fsPath = cacheKey.split('@')[0];
+        const fsPath = cacheKey.split('\0')[0];
         if (!currentPaths.has(fsPath)) {
             sarifKeysToDelete.push(cacheKey);
         }
