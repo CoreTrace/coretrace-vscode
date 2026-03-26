@@ -50,7 +50,8 @@
     "compile": "npm run copy-lucide && tsc -p ./",
     "watch": "npm run copy-lucide && tsc -watch -p ./",
     "copy-lucide": "node scripts/copy-lucide.cjs",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "pretest": "npm run compile"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
