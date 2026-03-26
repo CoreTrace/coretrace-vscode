@@ -147,11 +147,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
             uri = vscode.Uri.parse(rawPath);
             rawPath = uri.fsPath; // extract the native FS path so WSL/Workspace resolution can still act if necessary
         } else if (!path.isAbsolute(rawPath)) {
-            // Un outil comme ctrace (ou compile_commands) peut renvoyer un chemin relatif "main.c".
-            // Si le chemin n'est pas absolu, on tente de le résoudre dans le dossier racine du workspace.
+            // A tool like ctrace (or compile_commands) might return a relative path like "main.c".
+            // If the path is not absolute, attempt to resolve it against the workspace root folder.
             const folders = vscode.workspace.workspaceFolders;
             if (folders && folders.length > 0) {
-                // S'il ne correspond à rien, la fonction d'ouverture de document échouera proprement avec une erreur claire.
+                // If it resolves to a non-existent file, the openTextDocument call will fail cleanly with a clear error.
                 rawPath = path.join(folders[0].uri.fsPath, rawPath);
             }
         }

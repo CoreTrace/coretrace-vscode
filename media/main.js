@@ -29,8 +29,10 @@
 
     // ── Scope selector ─────────────────────────────────────────────────────────
     let workspaceMode = false;
+    let isRunning = false;
 
     function applyScope(ws) {
+        if (isRunning) { return; }
         workspaceMode = !!ws;
         if (scopeFile)  { scopeFile.classList.toggle('active', !workspaceMode); }
         if (scopeWs)    { scopeWs.classList.toggle('active',  workspaceMode); }
@@ -106,12 +108,18 @@
 
     // ── Handlers ───────────────────────────────────────────────────────────────
     function setRunning(running) {
+        isRunning = running;
         if (!runBtn) { return; }
         runBtn.disabled = running;
         runBtn.classList.toggle('running', running);
         if (runLabel) { runLabel.textContent = running ? 'Analysing…' : 'Run Analysis'; }
         // Icons are toggled purely by CSS (.running .icon-idle / .icon-running)
         // No lucide.createIcons() call needed — avoids invalidating other SVG refs.
+        
+        if (scopeFile) scopeFile.style.opacity = running ? '0.5' : '1';
+        if (scopeFile) scopeFile.style.cursor = running ? 'not-allowed' : 'pointer';
+        if (scopeWs) scopeWs.style.opacity = running ? '0.5' : '1';
+        if (scopeWs) scopeWs.style.cursor = running ? 'not-allowed' : 'pointer';
     }
 
     function setWsProgress(total, changed, cached, done) {
