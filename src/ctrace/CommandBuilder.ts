@@ -95,10 +95,8 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
  * - Windows: WSL-aware execution with automatic distro detection and temp-file fallback
  *
  * When `compileCommands` is true, `inputFilePath` is treated as a path to a
- * `compile_commands.json` database and is still passed through `--input`.
- *
- * Note: current ctrace CLI (see `ctrace --help`) does not expose a
- * `--compile-commands` flag, so we cannot use a dedicated option here.
+ * `compile_commands.json` database and is passed to the `--compile-commands` 
+ * flag (for stack analyzer configuration) as well as `--input` (for file discovery).
  *
  * Async because the Windows fallback path copies files to the system temp
  * directory using non-blocking I/O rather than blocking the extension host.
