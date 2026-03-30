@@ -4,6 +4,19 @@
   "description": "Integration for Ctrace CLI Audit Tool",
   "version": "0.1.0",
   "publisher": "CoreTrace",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "c",
+    "cpp",
+    "security",
+    "static analysis",
+    "audit",
+    "sarif"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/CoreTrace/coretrace-vscode.git"
