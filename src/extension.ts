@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
-import { locateBinary }       from './ctrace/BinaryLocator';
+import { ensureBinary }       from './ctrace/BinaryUpdater';
 import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
@@ -21,6 +21,11 @@ export function activate(context: vscode.ExtensionContext) {
     // ── Output channel ───────────────────────────────────────────────────────
     const output = vscode.window.createOutputChannel('Ctrace');
     context.subscriptions.push(output);
+
+    // Initialise and pre-fetch the binary in the background on startup
+    ensureBinary(context, output).catch((err) => {
+        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
+    });
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     const sidebarProvider = new SidebarProvider(context.extensionUri);
@@ -44,10 +49,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Shared helpers ───────────────────────────────────────────────────────
     async function locateOrError(): Promise<string | null> {
-        const p = await locateBinary(context.extensionUri.fsPath);
+        const p = await ensureBinary(context, output);
         if (!p) {
             vscode.window.showErrorMessage(
-                `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
+                `Ctrace binary could not be found or downloaded.`
             );
         }
         return p;
@@ -316,10 +321,10 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             // Locate binary
-            const ctracePath = await locateBinary(context.extensionUri.fsPath);
+            const ctracePath = await ensureBinary(context, output);
             if (!ctracePath) {
                 vscode.window.showErrorMessage(
-                    `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
+                    `Ctrace binary could not be found or downloaded.`
                 );
                 sidebarProvider.postMessage({ type: 'analysis-error' });
                 isRunning = false;
