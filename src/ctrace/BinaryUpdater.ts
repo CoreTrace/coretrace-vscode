@@ -163,10 +163,18 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
 async function getExtractedBinaryPath(binDir: string): Promise<string | null> {
     const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
     for (const name of candidates) {
-         const file = path.join(binDir, name);
-         if (fs.existsSync(file)) {
-             return file;
-         }
+        // Tarball structure is often: coretrace-vX.Y.Z-arch/bin/ctrace
+        // With strip: 1, it becomes: binDir/bin/ctrace
+        const fileInBin = path.join(binDir, 'bin', name);
+        if (fs.existsSync(fileInBin)) {
+            return fileInBin;
+        }
+        
+        // Fallback for flat structure
+        const file = path.join(binDir, name);
+        if (fs.existsSync(file)) {
+            return file;
+        }
     }
     return null;
 }
