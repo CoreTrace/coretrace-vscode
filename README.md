@@ -43,5 +43,5 @@ No need to wait for a full re-scan. CoreTrace caches file hashes across the enti
 4. Click **Run Analysis** to execute `ctrace`. All findings will appear instantly in the panel and directly in your code editor as error/warning highlights.
 
 ## ⚙️ Requirements
-- The extension automatically uses the `ctrace` / `coretrace` CLI binaries bundled alongside the extension installation. You do not need to install them manually in your PATH.
+- The extension automatically downloads and installs the latest `ctrace` / `coretrace` CLI binaries from GitHub Releases during its first activation. You do not need to install them manually in your PATH. It will also periodically check for and download binary updates automatically in the background.
 - *Recommended:* For accurate analysis in complex codebases, it is advised to generate a `compile_commands.json` (e.g. via `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) in your workspace root or `build` directory.
