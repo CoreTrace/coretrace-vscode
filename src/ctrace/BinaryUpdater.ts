@@ -79,6 +79,8 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         
     } catch (err: any) {
         output.appendLine(`Failed to check for CoreTrace updates: ${err.message}`);
+        // Even on failure, update the check timestamp to avoid spamming the API continuously during an outage
+        context.globalState.update('coretrace-last-update-check', now);
     }
 
     // Try to return the previously downloaded binary first, even if update check failed
@@ -132,14 +134,19 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
     const headers: any = { 'User-Agent': 'vscode-coretrace' };
     if (token) headers['Authorization'] = `token ${token}`;
 
+    const controller = new AbortController();
+    let timeoutId = setTimeout(() => controller.abort(new Error("Download stalled")), 30000);
+
     const response = await axios({
         url,
         method: 'GET',
         responseType: 'stream',
-        headers
+        headers,
+        signal: controller.signal
     });
 
     if (response.status !== 200) {
+        clearTimeout(timeoutId);
         throw new Error(`Failed to download asset: HTTP ${response.status}`);
     }
 
@@ -150,6 +157,9 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
 
     try {
         response.data.on('data', (chunk: Buffer) => {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => controller.abort(new Error("Download stalled")), 30000);
+
             downloadedLength += chunk.length;
             if (totalLength) {
                 const percent = Math.round((downloadedLength / totalLength) * 100);
@@ -158,6 +168,7 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
         });
 
         await pipeline(response.data, writer);
+        clearTimeout(timeoutId);
 
         // Extract to a unique temp directory
         const tmpDir = path.join(destDir, `tmp-${timestamp}`);
@@ -193,6 +204,16 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
             }
 
             const finalBinPath = path.join(destDir, path.basename(binaryInTmp));
+            
+            // Remove existing binary to avoid errors (e.g., EPERM/EEXIST on Windows) during rename
+            try {
+                await fs.promises.unlink(finalBinPath);
+            } catch (err: any) {
+                if (err.code !== 'ENOENT') {
+                    throw err;
+                }
+            }
+
             // Move binary to the root of destDir
             await fs.promises.rename(binaryInTmp, finalBinPath);
 
@@ -208,6 +229,7 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
             }
         }
     } finally {
+        clearTimeout(timeoutId);
         try {
             await fs.promises.unlink(tarballPath);
         } catch (e) {
