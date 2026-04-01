@@ -51,8 +51,10 @@ export function activate(context: vscode.ExtensionContext) {
     async function locateOrError(): Promise<string | null> {
         const p = await ensureBinary(context, output);
         if (!p) {
+            const extPath = context.extensionUri.fsPath;
+            const globalStorage = context.globalStorageUri.fsPath;
             vscode.window.showErrorMessage(
-                `Ctrace binary could not be found or downloaded.`
+                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
             );
         }
         return p;
@@ -323,8 +325,10 @@ export function activate(context: vscode.ExtensionContext) {
             // Locate binary
             const ctracePath = await ensureBinary(context, output);
             if (!ctracePath) {
+                const extPath = context.extensionUri.fsPath;
+                const globalStorage = context.globalStorageUri.fsPath;
                 vscode.window.showErrorMessage(
-                    `Ctrace binary could not be found or downloaded.`
+                    `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
                 );
                 sidebarProvider.postMessage({ type: 'analysis-error' });
                 isRunning = false;
