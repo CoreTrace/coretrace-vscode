@@ -57,7 +57,13 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Shared helpers ───────────────────────────────────────────────────────
     async function locateOrError(): Promise<string | null> {
-        const p = await ensureBinary(context, output);
+        let p: string | null = null;
+        try {
+            p = await ensureBinary(context, output);
+        } catch (e: any) {
+            output.appendLine(`ensureBinary threw an error: ${e.message}`);
+        }
+        
         if (!p) {
             const extPath = context.extensionUri.fsPath;
             const globalStorage = context.globalStorageUri.fsPath;
@@ -327,14 +333,10 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            isRunning = true;
-            const params = resolveParams(arg);
-
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active file to analyse.');
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
 
@@ -343,24 +345,21 @@ export function activate(context: vscode.ExtensionContext) {
             if (!vscode.workspace.workspaceFolders?.length) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
 
             // Locate binary
-            const ctracePath = await ensureBinary(context, output);
+            const ctracePath = await locateOrError();
+
             if (!ctracePath) {
-                const extPath = context.extensionUri.fsPath;
-                const globalStorage = context.globalStorageUri.fsPath;
-                vscode.window.showErrorMessage(
-                    `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
-                );
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
 
+            isRunning = true;
             sidebarProvider.postMessage({ type: 'analysis-start' });
+
+            const params = resolveParams(arg);
 
             // Build command (also validates params — throws on unsafe input).
             // Async on Windows: the fallback path copies the binary to %TEMP%

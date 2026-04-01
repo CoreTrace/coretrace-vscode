@@ -81,8 +81,10 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
                 }, async (progress) => {
                     output.appendLine(`Downloading CoreTrace release ${latestVersion} from GitHub...`);
                     await downloadAndExtract(assetInfo.url, binDir, progress);
-                    context.globalState.update('coretrace-version', latestVersion);
-                    context.globalState.update('coretrace-last-failed-update-check', undefined);
+                    await Promise.all([
+                        context.globalState.update('coretrace-version', latestVersion),
+                        context.globalState.update('coretrace-last-failed-update-check', undefined)
+                    ]);
                     output.appendLine(`Updated CoreTrace to ${latestVersion} successfully.`);
                 });
             } else {
@@ -91,18 +93,18 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         }
 
         // Update the timestamp only after a successful check (and potential download)
-        context.globalState.update('coretrace-last-update-check', now);
+        await context.globalState.update('coretrace-last-update-check', now);
 
         const bin = await getExtractedBinaryPath(binDir);
         if (bin) return bin;
         
     } catch (err: any) {
         output.appendLine(`Failed to check for CoreTrace updates: ${err.message}`);
-        context.globalState.update('coretrace-last-failed-update-check', now);
+        await context.globalState.update('coretrace-last-failed-update-check', now);
 
         // Keep old behaviour only when we already have a working cached binary.
         if (downloadedBinaryPath) {
-            context.globalState.update('coretrace-last-update-check', now);
+            await context.globalState.update('coretrace-last-update-check', now);
         }
     }
 
