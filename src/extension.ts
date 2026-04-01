@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
-import { locateBinary }       from './ctrace/BinaryLocator';
+import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener }       from './ctrace/BinaryUpdater';
 import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
@@ -32,6 +32,19 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerWebviewViewProvider('ctrace-audit-view', sidebarProvider)
     );
 
+    setBinaryUpdateListener((msg) => {
+        if (msg === '__done__') {
+            sidebarProvider.postMessage({ type: 'analysis-download-complete' });
+            return;
+        }
+        sidebarProvider.postMessage({ type: 'analysis-downloading', progress: msg });
+    });
+
+    // Initialise and pre-fetch the binary in the background on startup
+    ensureBinary(context, output).catch((err) => {
+        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
+    });
+
     // ── Diagnostics collection ───────────────────────────────────────────────
     const diagnosticCollection = vscode.languages.createDiagnosticCollection('ctrace');
     context.subscriptions.push(diagnosticCollection);
@@ -44,10 +57,18 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Shared helpers ───────────────────────────────────────────────────────
     async function locateOrError(): Promise<string | null> {
-        const p = await locateBinary(context.extensionUri.fsPath);
+        let p: string | null = null;
+        try {
+            p = await ensureBinary(context, output);
+        } catch (e: any) {
+            output.appendLine(`ensureBinary threw an error: ${e.message}`);
+        }
+        
         if (!p) {
+            const extPath = context.extensionUri.fsPath;
+            const globalStorage = context.globalStorageUri.fsPath;
             vscode.window.showErrorMessage(
-                `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
+                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
             );
         }
         return p;
@@ -62,6 +83,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runWorkspaceAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                return;
+            }
+
+            if (isUpdatingBinary()) {
+                vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
 
@@ -76,6 +104,8 @@ export function activate(context: vscode.ExtensionContext) {
                 sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
+            
+            sidebarProvider.postMessage({ type: 'analysis-start' });
 
             const params = resolveParams(arg);
 
@@ -293,16 +323,20 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
-            isRunning = true;
-            const params = resolveParams(arg);
+
+            if (isUpdatingBinary()) {
+                vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
+                return;
+            }
 
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active file to analyse.');
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
 
@@ -311,20 +345,21 @@ export function activate(context: vscode.ExtensionContext) {
             if (!vscode.workspace.workspaceFolders?.length) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
 
             // Locate binary
-            const ctracePath = await locateBinary(context.extensionUri.fsPath);
+            const ctracePath = await locateOrError();
+
             if (!ctracePath) {
-                vscode.window.showErrorMessage(
-                    `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
-                );
                 sidebarProvider.postMessage({ type: 'analysis-error' });
-                isRunning = false;
                 return;
             }
+
+            isRunning = true;
+            sidebarProvider.postMessage({ type: 'analysis-start' });
+
+            const params = resolveParams(arg);
 
             // Build command (also validates params — throws on unsafe input).
             // Async on Windows: the fallback path copies the binary to %TEMP%

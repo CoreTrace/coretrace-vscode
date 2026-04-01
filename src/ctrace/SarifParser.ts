@@ -31,9 +31,15 @@ export async function parseSarifOutput(stdout: string, reportFilePath?: string):
     }
 
     const mergeSarif = (source: SarifLog) => {
+        if (!source || !source.runs) {
+            return;
+        }
         if (!sarif) {
             sarif = source;
         } else {
+            if (!sarif.runs) {
+                sarif.runs = [];
+            }
             sarif.runs.push(...source.runs);
         }
     };
