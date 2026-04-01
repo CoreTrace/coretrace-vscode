@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
-import { ensureBinary, isUpdatingBinary }       from './ctrace/BinaryUpdater';
+import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener }       from './ctrace/BinaryUpdater';
 import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
@@ -22,11 +22,6 @@ export function activate(context: vscode.ExtensionContext) {
     const output = vscode.window.createOutputChannel('Ctrace');
     context.subscriptions.push(output);
 
-    // Initialise and pre-fetch the binary in the background on startup
-    ensureBinary(context, output).catch((err) => {
-        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
-    });
-
     // ── Sidebar ──────────────────────────────────────────────────────────────
     const sidebarProvider = new SidebarProvider(context.extensionUri);
     // Register the provider itself as a Disposable so its view-scoped
@@ -36,6 +31,19 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('ctrace-audit-view', sidebarProvider)
     );
+
+    setBinaryUpdateListener((msg) => {
+        if (msg === '__done__') {
+            sidebarProvider.postMessage({ type: 'analysis-download-complete' });
+            return;
+        }
+        sidebarProvider.postMessage({ type: 'analysis-downloading', progress: msg });
+    });
+
+    // Initialise and pre-fetch the binary in the background on startup
+    ensureBinary(context, output).catch((err) => {
+        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
+    });
 
     // ── Diagnostics collection ───────────────────────────────────────────────
     const diagnosticCollection = vscode.languages.createDiagnosticCollection('ctrace');
@@ -69,11 +77,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runWorkspaceAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
 
             if (isUpdatingBinary()) {
                 vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
 
@@ -88,6 +98,8 @@ export function activate(context: vscode.ExtensionContext) {
                 sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
+            
+            sidebarProvider.postMessage({ type: 'analysis-start' });
 
             const params = resolveParams(arg);
 
@@ -305,11 +317,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
 
             if (isUpdatingBinary()) {
                 vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-error' });
                 return;
             }
 
@@ -345,6 +359,8 @@ export function activate(context: vscode.ExtensionContext) {
                 isRunning = false;
                 return;
             }
+
+            sidebarProvider.postMessage({ type: 'analysis-start' });
 
             // Build command (also validates params — throws on unsafe input).
             // Async on Windows: the fallback path copies the binary to %TEMP%

@@ -30,16 +30,17 @@
     // ── Scope selector ─────────────────────────────────────────────────────────
     let workspaceMode = false;
     let isRunning = false;
+    let isDownloading = false;
 
     function applyScope(ws) {
-        if (isRunning) { return; }
+        if (isRunning || isDownloading) { return; }
         workspaceMode = !!ws;
         if (scopeFile)  { scopeFile.classList.toggle('active', !workspaceMode); }
         if (scopeWs)    { scopeWs.classList.toggle('active',  workspaceMode); }
         if (filePill)   { filePill.classList.toggle('hidden',  workspaceMode); }
         if (wsPill)     { wsPill.classList.toggle('hidden',   !workspaceMode); }
         if (wsProgress) { wsProgress.classList.add('hidden'); }
-        if (runLabel)   { runLabel.textContent = 'Run Analysis'; }
+        if (runLabel && !isDownloading && !isRunning) { runLabel.textContent = 'Run Analysis'; }
     }
 
     if (scopeFile) { scopeFile.addEventListener('click', () => applyScope(false)); }
@@ -86,6 +87,15 @@
     window.addEventListener('message', event => {
         const msg = event.data;
         switch (msg.type) {
+            case 'analysis-downloading':
+                setDownloading(msg.progress);
+                break;
+            case 'analysis-download-complete':
+                setDownloadComplete();
+                break;
+            case 'analysis-start':
+                setRunning(true);
+                break;
             case 'analysis-result':
                 handleAnalysisResult(msg.data);
                 break;
@@ -107,8 +117,31 @@
     });
 
     // ── Handlers ───────────────────────────────────────────────────────────────
+    function setDownloading(progressMsg) {
+        isDownloading = true;
+        if (!runBtn) { return; }
+        runBtn.disabled = true;
+        runBtn.classList.add('running'); // Force spinner instead of play icon
+        if (runLabel) { runLabel.textContent = `Downloading (${progressMsg})`; }
+        
+        if (scopeFile) scopeFile.style.opacity = '0.5';
+        if (scopeFile) scopeFile.style.cursor = 'not-allowed';
+        if (scopeWs) scopeWs.style.opacity = '0.5';
+        if (scopeWs) scopeWs.style.cursor = 'not-allowed';
+    }
+
+    function setDownloadComplete() {
+        isDownloading = false;
+        if (!isRunning) {
+            setRunning(false);
+        }
+    }
+
     function setRunning(running) {
         isRunning = running;
+        if (running) {
+            isDownloading = false;
+        }
         if (!runBtn) { return; }
         runBtn.disabled = running;
         runBtn.classList.toggle('running', running);

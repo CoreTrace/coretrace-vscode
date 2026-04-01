@@ -14,12 +14,21 @@ export function isUpdatingBinary(): boolean {
     return updatePromise !== null;
 }
 
+let progressListener: ((msg: string) => void) | undefined;
+
+export function setBinaryUpdateListener(listener: (msg: string) => void) {
+    progressListener = listener;
+}
+
 export async function ensureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<string | null> {
     if (updatePromise) {
         return updatePromise;
     }
     updatePromise = doEnsureBinary(context, output).finally(() => {
         updatePromise = null;
+        if (progressListener) {
+            progressListener('__done__');
+        }
     });
     return updatePromise;
 }
@@ -32,13 +41,20 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
 
     const downloadedBinaryPath = await getExtractedBinaryPath(binDir);
     const lastCheck = context.globalState.get<number>('coretrace-last-update-check') || 0;
+    const lastFailedCheck = context.globalState.get<number>('coretrace-last-failed-update-check') || 0;
     const now = Date.now();
     const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+    const FAILURE_BACKOFF = 60 * 1000;
 
-    // If we have checked recently, avoid spamming the GitHub API.
-    // Return the downloaded binary if it exists, otherwise fallback to the packaged binary.
-    if (now - lastCheck < TWELVE_HOURS) {
-        if (downloadedBinaryPath) return downloadedBinaryPath;
+    // If we have a cached binary and checked recently, avoid spamming the GitHub API.
+    if (downloadedBinaryPath && now - lastCheck < TWELVE_HOURS) {
+        return downloadedBinaryPath;
+    }
+
+    // When there is no cached binary, keep retrying with a short backoff.
+    // This avoids a 12-hour lockout if the very first download fails.
+    if (!downloadedBinaryPath && now - lastFailedCheck < FAILURE_BACKOFF) {
+        output.appendLine('Skipping update check due to recent failure backoff.');
         return await locateBinary(context.extensionUri.fsPath);
     }
 
@@ -56,6 +72,8 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         if (latestVersion !== currentVersion || !cachedBinaryPath) {
             const assetInfo = getAssetForPlatform(release.assets);
             if (assetInfo) {
+                output.appendLine(`Selected release asset: ${assetInfo.name}`);
+                if (progressListener) { progressListener("0%"); }
                 await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
                     title: `Downloading CoreTrace ${latestVersion}...`,
@@ -64,6 +82,7 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
                     output.appendLine(`Downloading CoreTrace release ${latestVersion} from GitHub...`);
                     await downloadAndExtract(assetInfo.url, binDir, progress);
                     context.globalState.update('coretrace-version', latestVersion);
+                    context.globalState.update('coretrace-last-failed-update-check', undefined);
                     output.appendLine(`Updated CoreTrace to ${latestVersion} successfully.`);
                 });
             } else {
@@ -79,8 +98,12 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         
     } catch (err: any) {
         output.appendLine(`Failed to check for CoreTrace updates: ${err.message}`);
-        // Even on failure, update the check timestamp to avoid spamming the API continuously during an outage
-        context.globalState.update('coretrace-last-update-check', now);
+        context.globalState.update('coretrace-last-failed-update-check', now);
+
+        // Keep old behaviour only when we already have a working cached binary.
+        if (downloadedBinaryPath) {
+            context.globalState.update('coretrace-last-update-check', now);
+        }
     }
 
     // Try to return the previously downloaded binary first, even if update check failed
@@ -163,12 +186,16 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
             downloadedLength += chunk.length;
             if (totalLength) {
                 const percent = Math.round((downloadedLength / totalLength) * 100);
-                progress.report({ message: `${percent}%`, increment: (chunk.length / totalLength) * 100 });
+                const msg = `${percent}%`;
+                progress.report({ message: msg, increment: (chunk.length / totalLength) * 100 });
+                if (progressListener) { progressListener(msg); }
             }
         });
 
         await pipeline(response.data, writer);
         clearTimeout(timeoutId);
+
+        if (progressListener) { progressListener("Extracting..."); }
 
         // Extract to a unique temp directory
         const tmpDir = path.join(destDir, `tmp-${timestamp}`);

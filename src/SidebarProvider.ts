@@ -24,6 +24,9 @@ const ALLOWED_COMMANDS = new Set(['ctrace.runAnalysis', 'ctrace.runWorkspaceAnal
 export type HostMessage =
     | { type: 'analysis-result';     data: unknown                                            }
     | { type: 'analysis-error'                                                                }
+    | { type: 'analysis-start'                                                                }
+    | { type: 'analysis-download-complete'                                                    }
+    | { type: 'analysis-downloading'; progress: string                                        }
     | { type: 'active-file';         name: string | null                                      }
     | { type: 'workspace-progress';  total: number; changed: number; cached: number; done: number };
 
