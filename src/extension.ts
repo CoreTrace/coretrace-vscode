@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SidebarProvider, type HostMessage } from './SidebarProvider';
-import { ensureBinary }       from './ctrace/BinaryUpdater';
+import { ensureBinary, isUpdatingBinary }       from './ctrace/BinaryUpdater';
 import { buildCommand, parseAndValidateParams } from './ctrace/CommandBuilder';
 import { runCommand }         from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
@@ -69,6 +69,11 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runWorkspaceAnalysis', async (arg?: AnalysisParams | string) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                return;
+            }
+
+            if (isUpdatingBinary()) {
+                vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
                 return;
             }
 
@@ -302,6 +307,12 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
                 return;
             }
+
+            if (isUpdatingBinary()) {
+                vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                return;
+            }
+
             isRunning = true;
             const params = resolveParams(arg);
 

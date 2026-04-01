@@ -10,6 +10,10 @@ const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrac
 
 let updatePromise: Promise<string | null> | null = null;
 
+export function isUpdatingBinary(): boolean {
+    return updatePromise !== null;
+}
+
 export async function ensureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<string | null> {
     if (updatePromise) {
         return updatePromise;
