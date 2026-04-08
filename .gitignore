@@ -27,3 +27,4 @@ ccoretrace-sarif-tscancode.json
 Thumbs.db
 
 # test.vscode-test/
+.vscode-test/
