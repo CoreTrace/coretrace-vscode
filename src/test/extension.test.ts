@@ -10,16 +10,17 @@ suite('Extension Activation & Integration Test Suite', () => {
 
     test('Extension should activate successfully', async () => {
         const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
-        if (extension) {
-            // Will throw if activation fails (e.g. fs access errors, dependency crashes)
-            await extension.activate();
-            assert.strictEqual(extension.isActive, true, 'Extension failed to switch to active state.');
-        }
+        assert.ok(extension, 'Extension not found. Cannot activate.');
+        
+        // Will throw if activation fails (e.g. fs access errors, dependency crashes)
+        await extension.activate();
+        assert.strictEqual(extension.isActive, true, 'Extension failed to switch to active state.');
     });
 
     test('Extension executes commands without throwing instantly', async () => {
         const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
-        await extension?.activate();
+        assert.ok(extension, 'Extension not found. Cannot check commands.');
+        await extension.activate();
         
         // This will grab all registered commands in vscode
         const commands = await vscode.commands.getCommands(true);
