@@ -17,7 +17,7 @@ suite('Extension Activation & Integration Test Suite', () => {
         assert.strictEqual(extension.isActive, true, 'Extension failed to switch to active state.');
     });
 
-    test('Extension executes commands without throwing instantly', async () => {
+    test('Extension registers all expected commands', async () => {
         const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
         assert.ok(extension, 'Extension not found. Cannot check commands.');
         await extension.activate();
