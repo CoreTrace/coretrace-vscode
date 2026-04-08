@@ -23,7 +23,7 @@ suite('Extension Activation & Integration Test Suite', () => {
         await extension.activate();
         
         // This will grab all registered commands in vscode
-        const commands = await vscode.commands.getCommands(true);
+        const commands = await vscode.commands.getCommands();
 
         assert.ok(commands.includes('ctrace.runAnalysis'), 'Command ctrace.runAnalysis is missing');
         assert.ok(commands.includes('ctrace.runWorkspaceAnalysis'), 'Command ctrace.runWorkspaceAnalysis is missing');
