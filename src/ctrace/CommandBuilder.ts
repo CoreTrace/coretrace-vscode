@@ -4,10 +4,58 @@ import * as os from 'os';
 import * as path from 'path';
 
 export interface BuiltCommand {
-    /** Shell command ready to be executed via cp.exec */
-    command: string;
+    /**
+     * When set, use cp.execFile(file, args) — no shell, no injection risk.
+     * Preferred for Linux / macOS.
+     */
+    file?: string;
+    args?: string[];
+    /**
+     * Shell command string used only for WSL paths (Windows).
+     * Always built from validated, shell-escaped arguments.
+     */
+    command?: string;
     /** Temporary files to clean up after execution (Windows only) */
     tempFiles: string[];
+}
+
+// ─── Parameter validation ─────────────────────────────────────────────────────
+
+/**
+ * Parses a raw params string into individual tokens and validates every token
+ * against an allowlist. Only `--flag` and `--flag=value` forms are accepted
+ * where value contains only safe characters (alphanumeric, `.`, `/`, `:`, `@`,
+ * `,`, `-`, `_`).
+ *
+ * Throws if any token does not match, preventing shell injection via
+ * metacharacters such as `;`, `|`, `&`, `$()`, backticks, etc.
+ */
+export function parseAndValidateParams(raw: string): string[] {
+    // Tokenize on whitespace; strip surrounding quotes from each token.
+    const tokens: string[] = [];
+    const re = /("[^"]*"|'[^']*'|\S+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw)) !== null) {
+        tokens.push(m[1].replace(/^["']|["']$/g, ''));
+    }
+
+    // Strict allowlist: --flag  or  --flag=safeValue
+    const safe = /^--[a-zA-Z][a-zA-Z0-9-]*(?:=[a-zA-Z0-9_./:@,\-]*)?$/;
+    for (const token of tokens) {
+        if (!safe.test(token)) {
+            throw new Error(`Unsafe CLI parameter rejected: "${token}"`);
+        }
+    }
+    return tokens;
+}
+
+/**
+ * Escapes a single argument for embedding inside a POSIX sh -c "…" string.
+ * Wraps the value in single quotes and escapes any literal single quotes.
+ * Only used for WSL execution paths that cannot avoid spawning a shell.
+ */
+function shellEscapeArg(arg: string): string {
+    return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
 /**
@@ -29,8 +77,19 @@ export function buildCommand(
 // ─── Linux / macOS ───────────────────────────────────────────────────────────
 
 function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string): BuiltCommand {
+<<<<<<< HEAD
     const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}" ${params}`;
     return { command, tempFiles: [] };
+=======
+    const validatedParams = parseAndValidateParams(params);
+    // Use execFile — no shell spawn, so shell metacharacters in any argument
+    // can never be interpreted as commands.
+    return {
+        file: ctracePath,
+        args: ['--input', inputFilePath, ...validatedParams, '--sarif-format'],
+        tempFiles: [],
+    };
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
 }
 
 // ─── Windows / WSL ───────────────────────────────────────────────────────────
@@ -105,10 +164,15 @@ function trySmartDistroExecution(
 
         const finalBin = binWsl?.distro === detectedDistro ? binWsl.internalPath : resolvePath(ctracePath, binWsl);
         const finalInput = inputWsl?.distro === detectedDistro ? inputWsl.internalPath : resolvePath(inputFilePath, inputWsl);
-        const safeParams = params.replace(/"/g, '\\"');
+        // Validate params before embedding in the shell string.
+        const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
         const prefix = isDefault ? 'wsl' : `wsl ${distroFlag}`;
 
+<<<<<<< HEAD
         return `${prefix} sh -c "chmod +x '${finalBin}' && '${finalBin}' --input '${finalInput}' ${safeParams}"`;
+=======
+        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)} ${validatedParams} --sarif-format"`;  
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
     } catch {
         return null;
     }
@@ -149,8 +213,13 @@ function buildFallbackCommand(ctracePath: string, inputFilePath: string, params:
     const wBin = resolveWslPath(tempBin);
     const wInput = resolveWslPath(tempInput);
     const lBin = `/tmp/ctrace-${Math.floor(Math.random() * 100000)}`;
-    const safeParams = params.replace(/"/g, '\\"');
+    // Validate params before embedding in the shell string.
+    const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
 
+<<<<<<< HEAD
     const command = `wsl sh -c "cp '${wBin}' '${lBin}' && chmod +x '${lBin}' && '${lBin}' --input '${wInput}' ${safeParams}; rm -f '${lBin}'"`;
+=======
+    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
     return { command, tempFiles };
 }

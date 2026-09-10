@@ -70,8 +70,14 @@ export function activate(context: vscode.ExtensionContext) {
                 filesToAnalyze = [targetUri.fsPath];
             }
 
+<<<<<<< HEAD
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!workspaceRoot) {
+=======
+            const filePath = editor.document.uri.fsPath;
+
+            if (!vscode.workspace.workspaceFolders?.length) {
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 return;
             }
@@ -85,6 +91,23 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
+<<<<<<< HEAD
+=======
+            // Build command (also validates params — throws on unsafe input)
+            let built: ReturnType<typeof buildCommand>;
+            try {
+                built = buildCommand(ctracePath, filePath, params);
+            } catch (e) {
+                vscode.window.showErrorMessage(`Invalid analysis parameters: ${e}`);
+                sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                return;
+            }
+            const { tempFiles } = built;
+            const commandLabel = built.command ?? `${built.file} ${built.args?.join(' ')}`;
+            console.log('[ctrace] Running:', commandLabel);
+
+            // ctrace resolves ./tscancode, ./ikos etc. relative to its own directory
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
             const extensionPath = context.extensionUri.fsPath;
             const ctraceConfig  = vscode.workspace.getConfiguration('ctrace');
             let effectiveUiState = uiState;
@@ -107,6 +130,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             // ── Run with progress ────────────────────────────────────────────
             await vscode.window.withProgress(
+<<<<<<< HEAD
                 {
                     location: vscode.ProgressLocation.Notification,
                     title: scanWorkspace
@@ -226,6 +250,65 @@ export function activate(context: vscode.ExtensionContext) {
                             ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
                             : `Analysis complete — no issues found${filesSuffix}.`
                     );
+=======
+                { location: vscode.ProgressLocation.Notification, title: 'Running Ctrace Analysis…', cancellable: true },
+                async (_progress, token) => {
+                    let stdout = '', stderr = '';
+                    let exitCode: number | null = null;
+                    try {
+                        const result = await runCommand(built, extensionPath, token);
+                        ({ stdout, stderr, exitCode } = result);
+
+                        if (result.killed) {
+                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            if (!token.isCancellationRequested) {
+                                vscode.window.showErrorMessage('Ctrace analysis timed out (2 min). Consider simplifying the entry points or checking for infinite loops.');
+                                output.appendLine('[timed out]');
+                            }
+                            return;
+                        }
+
+                        // Display raw output in the Output channel
+                        output.clear();
+                        output.appendLine(`$ ${commandLabel}`);
+                        output.appendLine('');
+                        if (stdout) { output.appendLine(stdout); }
+                        if (stderr) { output.appendLine('[stderr] ' + stderr); }
+                        output.appendLine(`[exit code: ${exitCode ?? 0}]`);
+
+                        // Parse results
+                        const sarif = parseSarifOutput(stdout, reportPath);
+
+                        if (!sarif) {
+                            handleNoResults(stdout, stderr, exitCode);
+                            sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                            return;
+                        }
+
+                        const total = countResults(sarif);
+
+                        updateDiagnostics(sarif, diagnosticCollection, filePath);
+
+                        sidebarProvider._view?.webview.postMessage({
+                            type: 'analysis-result',
+                            data: sarif,
+                        });
+
+                        vscode.window.showInformationMessage(
+                            total > 0
+                                ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found.`
+                                : 'Analysis complete — no issues found.'
+                        );
+                    } catch (e) {
+                        // Unexpected error (e.g. execFile failure, FS error) — unblock the button.
+                        sidebarProvider._view?.webview.postMessage({ type: 'analysis-error' });
+                        vscode.window.showErrorMessage(`Ctrace analysis failed unexpectedly: ${e}`);
+                        output.appendLine(`[error] ${e}`);
+                    } finally {
+                        // Always clean up temp files, even on crash/throw.
+                        tempFiles.forEach(tryDelete);
+                    }
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
                 }
             );
         })

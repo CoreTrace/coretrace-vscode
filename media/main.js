@@ -330,6 +330,7 @@
             case 'analysis-result':
                 handleAnalysisResult(msg.data);
                 break;
+<<<<<<< HEAD
             case 'analysis-done':
                 setRunning(false);
                 if (currentStatus === 'running') { setStatus('Ready to audit', '', 'ready'); }
@@ -340,6 +341,12 @@
                 break;
             case 'analysis-status':
                 setStatus(msg.message || 'Analysis complete', msg.detail || '', msg.status || 'ready');
+=======
+            case 'analysis-error':
+                // Ensures the button is never stuck in loading state when
+                // the analysis fails, crashes, or produces no parseable output.
+                setRunning(false);
+>>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
                 break;
             case 'active-file':
                 lastFileName = msg.name || 'No file open';
