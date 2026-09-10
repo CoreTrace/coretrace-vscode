@@ -1,32 +1,57 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 
 /**
  * Translates a SARIF result set into VS Code Diagnostics and updates the
  * provided DiagnosticCollection.
  *
- * All results are mapped to `filePath` because ctrace currently analyses one
- * file at a time.
+ * Each result is mapped to its actual file path as declared in the SARIF
+ * `artifactLocation.uri` field (resolved relative to `analysedFilePath`).
+ * Falls back to `analysedFilePath` when no URI is present.
+ *
+ * @param clearFirst  Set to false when calling inside a workspace scan loop
+ *                    to avoid wiping earlier results. Caller must clear once
+ *                    before the loop instead.
  */
 export function updateDiagnostics(
     sarifData: any,
     collection: vscode.DiagnosticCollection,
-    filePath: string
+    analysedFilePath: string,
+    clearFirst = true
 ): void {
-    collection.clear();
+    if (clearFirst) { collection.clear(); }
 
     if (!sarifData?.runs?.length) { return; }
 
     const allResults: any[] = sarifData.runs.flatMap((r: any) => r.results ?? []);
-    const diagnostics: vscode.Diagnostic[] = [];
+
+    // Group diagnostics by resolved absolute file path
+    const byFile = new Map<string, vscode.Diagnostic[]>();
+    const fileDir = path.dirname(analysedFilePath);
 
     for (const result of allResults) {
-        const region = result.locations?.[0]?.physicalLocation?.region;
+        const physLoc = result.locations?.[0]?.physicalLocation;
+        const region  = physLoc?.region;
         if (!region) { continue; }
 
+        // ── Resolve the target file ───────────────────────────────────────────
+        let targetFile = analysedFilePath;
+        const uriStr: string | undefined = physLoc?.artifactLocation?.uri;
+        if (uriStr) {
+            if (uriStr.startsWith('file://')) {
+                targetFile = vscode.Uri.parse(uriStr).fsPath;
+            } else if (path.isAbsolute(uriStr)) {
+                targetFile = uriStr;
+            } else {
+                // Relative URI — resolve against the analysed file's directory
+                targetFile = path.resolve(fileDir, uriStr);
+            }
+        }
+
+        // ── Build range (SARIF lines are 1-based) ────────────────────────────
         const startLine = Math.max(0, (region.startLine ?? 1) - 1);
         const startCol  = Math.max(0, (region.startColumn ?? 1) - 1);
-        // endLine/endColumn may be 0 when not set — fall back to start position
-        const endLine   = Math.max(startLine, ((region.endLine || region.startLine || 1) - 1));
+        const endLine   = Math.max(startLine, ((region.endLine   || region.startLine   || 1) - 1));
         const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
 
         const range      = new vscode.Range(startLine, startCol, endLine, endCol);
@@ -36,12 +61,13 @@ export function updateDiagnostics(
         diagnostic.source = 'Ctrace';
         diagnostic.code   = result.ruleId;
 
-        diagnostics.push(diagnostic);
+        if (!byFile.has(targetFile)) { byFile.set(targetFile, []); }
+        byFile.get(targetFile)!.push(diagnostic);
     }
 
-    if (diagnostics.length > 0) {
-        collection.set(vscode.Uri.file(filePath), diagnostics);
-    }
+    byFile.forEach((diagnostics, fp) => {
+        collection.set(vscode.Uri.file(fp), diagnostics);
+    });
 }
 
 function sarifLevelToVsCode(level: string | undefined): vscode.DiagnosticSeverity {

@@ -29,7 +29,7 @@ export function buildCommand(
 // ─── Linux / macOS ───────────────────────────────────────────────────────────
 
 function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string): BuiltCommand {
-    const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}" ${params} --sarif-format`;
+    const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}" ${params}`;
     return { command, tempFiles: [] };
 }
 
@@ -108,7 +108,7 @@ function trySmartDistroExecution(
         const safeParams = params.replace(/"/g, '\\"');
         const prefix = isDefault ? 'wsl' : `wsl ${distroFlag}`;
 
-        return `${prefix} sh -c "chmod +x '${finalBin}' && '${finalBin}' --input '${finalInput}' ${safeParams} --sarif-format"`;
+        return `${prefix} sh -c "chmod +x '${finalBin}' && '${finalBin}' --input '${finalInput}' ${safeParams}"`;
     } catch {
         return null;
     }
@@ -151,6 +151,6 @@ function buildFallbackCommand(ctracePath: string, inputFilePath: string, params:
     const lBin = `/tmp/ctrace-${Math.floor(Math.random() * 100000)}`;
     const safeParams = params.replace(/"/g, '\\"');
 
-    const command = `wsl sh -c "cp '${wBin}' '${lBin}' && chmod +x '${lBin}' && '${lBin}' --input '${wInput}' ${safeParams} --sarif-format; rm -f '${lBin}'"`;
+    const command = `wsl sh -c "cp '${wBin}' '${lBin}' && chmod +x '${lBin}' && '${lBin}' --input '${wInput}' ${safeParams}; rm -f '${lBin}'"`;
     return { command, tempFiles };
 }
