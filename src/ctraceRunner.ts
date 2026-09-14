@@ -94,9 +94,6 @@ export function buildCtraceArgs(
     args.push('--sarif-format');
     args.push(`--report-file=${requiredReportFile(uiState.reportFile)}`);
 
-    const onlyFunction = cleanValue(uiState.onlyFunction);
-    if (onlyFunction) { args.push(`--only-function=${onlyFunction}`); }
-
     const onlyDir = cleanValue(uiState.onlyDir);
     if (onlyDir) { args.push(`--only-dir=${onlyDir}`); }
 
@@ -308,8 +305,11 @@ export function generateConfigFileIfNeeded(
 
     const defines = parseList(uiState.macros).map(s => s.replace(/^-D/, '').trim()).filter(Boolean);
     const compileArgs = parseList(uiState.compilerExtraArgs);
+    const onlyFunctions = parseList(uiState.onlyFunction)
+        .map(s => s.replace(/^--only-functions?=/, '').replace(/^--only-func=/, '').trim())
+        .filter(Boolean);
 
-    if (includeDirs.length === 0 && defines.length === 0 && compileArgs.length === 0) {
+    if (includeDirs.length === 0 && defines.length === 0 && compileArgs.length === 0 && onlyFunctions.length === 0) {
         return false;
     }
 
@@ -325,6 +325,9 @@ export function generateConfigFileIfNeeded(
     }
     if (compileArgs.length > 0) {
         configData.stack_analyzer.compile_args = compileArgs;
+    }
+    if (onlyFunctions.length > 0) {
+        configData.stack_analyzer.only_functions = onlyFunctions;
     }
 
     try {
