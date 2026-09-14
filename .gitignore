@@ -26,3 +26,4 @@ ccoretrace-sarif-tscancode.json
 # OS
 .DS_Store
 Thumbs.db
+.ctrace-report-*.txt

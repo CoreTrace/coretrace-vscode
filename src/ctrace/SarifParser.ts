@@ -59,7 +59,7 @@ export function parseSarifOutput(stdout: string, reportFilePath?: string): any |
 
 /** Returns the total number of results across all SARIF runs. */
 export function countResults(sarif: any): number {
-    if (!sarif?.runs) { return 0; }
+    if (!sarif?.runs || !Array.isArray(sarif.runs)) { return 0; }
     return sarif.runs.reduce((sum: number, r: any) => sum + (r.results?.length ?? 0), 0);
 }
 
@@ -119,7 +119,7 @@ function convertStackAnalyzerToSarif(stackObj: any): any {
         message: { text: (d.details?.message ?? 'Unknown stack issue').trim() },
         locations: [{
             physicalLocation: {
-                artifactLocation: { uri: stackObj.meta?.inputFile },
+                artifactLocation: { uri: d.location?.file || stackObj.meta?.inputFile },
                 region: {
                     startLine: d.location?.startLine ?? 1,
                     startColumn: d.location?.startColumn ?? 1,

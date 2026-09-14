@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -9,6 +10,8 @@ export interface CtraceUIState {
     scanMode?: 'file' | 'workspace';
     staticEnabled?: boolean;
     dynamicEnabled?: boolean;
+    staticTools?: string[];
+    dynamicTools?: string[];
     autoEntryPoints?: boolean;
     entryPoints?: string[];
     onlyFunction?: string;
@@ -36,6 +39,7 @@ export interface CtraceUIState {
     smtRules?: string;
     analysisProfile?: AnalysisProfile;
     reportFile: string;
+    configFile?: string;
 }
 
 const DEFAULT_PROFILE: AnalysisProfile = 'full';
@@ -48,6 +52,8 @@ const ALLOWED_INVOKE_TOOLS = new Set([
     'ikos',
     'tscancode',
 ]);
+const STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode'];
+const DYNAMIC_TOOLS = ['ctrace_stack_analyzer'];
 
 /**
  * Converts Webview state and VS Code settings into safe ctrace CLI arguments.
@@ -58,26 +64,35 @@ export function buildCtraceArgs(
     uiState: CtraceUIState,
     vscodeConfig: vscode.WorkspaceConfiguration
 ): string[] {
-    const args: string[] = [
-        '--entry-points=main',
-        // `--analysis-profile=${validProfile(uiState.analysisProfile)}`,
-        '--sarif-format',
-        `--report-file=${requiredReportFile(uiState.reportFile)}`,
-        // '--async',
-    ];
+    const args: string[] = [];
 
     const entryPoints = (uiState.entryPoints ?? [])
         .filter((name, index, names): name is string =>
             typeof name === 'string' && cleanValue(name) !== undefined && names.indexOf(name) === index
         )
         .map(name => name.trim());
-    const entryPointFlag = entryPoints.length > 0
-        ? `--entry-points=${entryPoints.join(',')}`
-        : '--entry-points=main';
-    args[0] = entryPointFlag;
+    if (entryPoints.length > 0) {
+        args.push(`--entry-points=${entryPoints.join(',')}`);
+    }
 
-    if (uiState.staticEnabled !== false) { args.splice(1, 0, '--static'); }
-    if (uiState.dynamicEnabled !== false) { args.splice(uiState.staticEnabled !== false ? 2 : 1, 0, '--dyn'); }
+    const staticTools = normalizeTools(uiState.staticTools, STATIC_TOOLS);
+    const dynamicTools = normalizeTools(uiState.dynamicTools, DYNAMIC_TOOLS);
+    const partialTools: string[] = [];
+
+    if (uiState.staticEnabled !== false && staticTools.length === STATIC_TOOLS.length) {
+        args.push('--static');
+    } else if (uiState.staticEnabled !== false) {
+        partialTools.push(...staticTools);
+    }
+
+    if (uiState.dynamicEnabled !== false && dynamicTools.length === DYNAMIC_TOOLS.length) {
+        args.push('--dyn');
+    } else if (uiState.dynamicEnabled !== false) {
+        partialTools.push(...dynamicTools);
+    }
+
+    args.push('--sarif-format');
+    args.push(`--report-file=${requiredReportFile(uiState.reportFile)}`);
 
     const onlyFunction = cleanValue(uiState.onlyFunction);
     if (onlyFunction) { args.push(`--only-function=${onlyFunction}`); }
@@ -99,9 +114,8 @@ export function buildCtraceArgs(
 
     if (uiState.includeCompdbDeps === true) { args.push('--include-compdb-deps'); }
 
-    args.push(...compileArgs(uiState.compilerExtraArgs));
-    args.push(...compileArgs(uiState.extraIncludes, '-I'));
-    args.push(...compileArgs(uiState.macros, '-D'));
+    const configFile = cleanValue(uiState.configFile);
+    if (configFile) { args.push(`--config=${configFile}`); }
 
     if (uiState.quiet === true) { args.push('--quiet'); }
     if (uiState.warningsOnly === true) { args.push('--warnings-only'); }
@@ -109,7 +123,7 @@ export function buildCtraceArgs(
     if (uiState.demangle === true) { args.push('--demangle'); }
     if (uiState.dumpFilter === true) { args.push('--dump-filter'); }
 
-    const invokedTools = (uiState.invokedTools ?? [])
+    const invokedTools = [...partialTools, ...(uiState.invokedTools ?? [])]
         .filter((tool, index, tools): tool is string =>
             typeof tool === 'string' &&
             ALLOWED_INVOKE_TOOLS.has(tool) &&
@@ -184,6 +198,11 @@ function cleanValue(value: unknown): string | undefined {
     return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeTools(value: unknown, fallback: string[]): string[] {
+    if (!Array.isArray(value)) { return [...fallback]; }
+    return value.filter((tool): tool is string => typeof tool === 'string' && fallback.includes(tool));
+}
+
 function configString(config: vscode.WorkspaceConfiguration, key: string): string | undefined {
     return cleanValue(config.get<string>(key));
 }
@@ -235,4 +254,83 @@ function validPositiveInteger(value: unknown): number | undefined {
 
 export function createReportPath(extensionPath: string): string {
     return path.join(extensionPath, `.ctrace-report-${Date.now()}-${process.pid}.txt`);
+}
+
+export function createConfigPath(extensionPath: string): string {
+    return path.join(extensionPath, `.ctrace-config-${Date.now()}-${process.pid}.json`);
+}
+
+function toInternalPath(p: string): string {
+    let normalized = p.replace(/\\/g, '/');
+    const uncMatch = normalized.match(/^\/{2,}[^\/]+\/([^\/]+)\/(.+)$/i);
+    if (uncMatch) {
+        return '/' + uncMatch[2];
+    }
+    const distroMatch = normalized.match(/^\/([^\/]+)\/(home|mnt|etc|usr|var|opt|tmp)\/(.+)$/i);
+    if (distroMatch) {
+        return '/' + distroMatch[2] + '/' + distroMatch[3];
+    }
+    return normalized;
+}
+
+export function generateConfigFileIfNeeded(
+    configPath: string,
+    uiState: CtraceUIState,
+    workspaceRoot?: string
+): boolean {
+    const parseList = (val?: string) => {
+        if (!val || typeof val !== 'string') { return []; }
+        return val.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+    };
+
+    const internalRoot = workspaceRoot ? toInternalPath(workspaceRoot) : undefined;
+    const rawIncludes = parseList(uiState.extraIncludes).map(s => s.replace(/^-I/, '').trim()).filter(Boolean);
+    
+    const includeDirs: string[] = [];
+    const extraArgs: string[] = [];
+
+    for (const item of rawIncludes) {
+        const isAbsolute = path.isAbsolute(item) || item.startsWith('/') || item.startsWith('\\') || /^[a-zA-Z]:/.test(item);
+        let resolved = item;
+        if (internalRoot && !isAbsolute) {
+            resolved = path.posix.join(internalRoot, item.replace(/\\/g, '/'));
+        }
+        const internal = toInternalPath(resolved);
+        if (!includeDirs.includes(internal)) {
+            includeDirs.push(internal);
+            extraArgs.push(`-I${internal}`);
+        }
+        if (!isAbsolute && !includeDirs.includes(item)) {
+            includeDirs.push(item);
+            extraArgs.push(`-I${item}`);
+        }
+    }
+
+    const defines = parseList(uiState.macros).map(s => s.replace(/^-D/, '').trim()).filter(Boolean);
+    const compileArgs = parseList(uiState.compilerExtraArgs);
+
+    if (includeDirs.length === 0 && defines.length === 0 && compileArgs.length === 0) {
+        return false;
+    }
+
+    const configData: Record<string, any> = {
+        stack_analyzer: {}
+    };
+    if (includeDirs.length > 0) {
+        configData.stack_analyzer.include_dirs = includeDirs;
+        configData.stack_analyzer.extra_args = extraArgs;
+    }
+    if (defines.length > 0) {
+        configData.stack_analyzer.defines = defines;
+    }
+    if (compileArgs.length > 0) {
+        configData.stack_analyzer.compile_args = compileArgs;
+    }
+
+    try {
+        fs.writeFileSync(configPath, JSON.stringify(configData, null, 2), 'utf8');
+        return true;
+    } catch {
+        return false;
+    }
 }

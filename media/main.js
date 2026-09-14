@@ -2,51 +2,52 @@
     const vscode = acquireVsCodeApi();
 
     // ── DOM refs ───────────────────────────────────────────────────────────────
-    const runBtn          = document.getElementById('run-btn');
-    const runLabel        = document.getElementById('run-label');
-    const resultsContainer= document.getElementById('results-container');
-    const vulnList        = document.getElementById('vuln-list');
-    const vulnCount       = document.getElementById('vuln-count');
-    const findingsSearch  = document.getElementById('findings-search');
-    const severityFilter  = document.getElementById('severity-filter');
-    const findingsEmpty   = document.getElementById('findings-empty');
-    const statusDot       = document.getElementById('status-dot');
-    const statusText      = document.getElementById('status-text');
-    const statusDetail    = document.getElementById('status-detail');
-    const progressTrack   = document.getElementById('progress-track');
-    const progressBar     = document.getElementById('progress-bar');
-    const summaryErrors   = document.getElementById('summary-errors');
+    const runBtn = document.getElementById('run-btn');
+    const runLabel = document.getElementById('run-label');
+    const resultsContainer = document.getElementById('results-container');
+    const vulnList = document.getElementById('vuln-list');
+    const vulnCount = document.getElementById('vuln-count');
+    const findingsSearch = document.getElementById('findings-search');
+    const severityFilter = document.getElementById('severity-filter');
+    const findingsEmpty = document.getElementById('findings-empty');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const statusDetail = document.getElementById('status-detail');
+    const progressTrack = document.getElementById('progress-track');
+    const progressBar = document.getElementById('progress-bar');
+    const summaryErrors = document.getElementById('summary-errors');
     const summaryWarnings = document.getElementById('summary-warnings');
-    const summaryNotes    = document.getElementById('summary-notes');
-    const helpBtn         = document.getElementById('help-btn');
-    const emptyState      = document.getElementById('empty-state');
-    const emptyRunBtn     = document.getElementById('empty-run-btn');
-    const fileLabel       = document.getElementById('file-label');
-    const scanModeRow     = document.getElementById('scan-mode-row');
-    const scanFileBtn     = document.getElementById('scan-file-btn');
+    const summaryNotes = document.getElementById('summary-notes');
+    const helpBtn = document.getElementById('help-btn');
+    const emptyState = document.getElementById('empty-state');
+    const emptyRunBtn = document.getElementById('empty-run-btn');
+    const fileLabel = document.getElementById('file-label');
+    const scanModeRow = document.getElementById('scan-mode-row');
+    const scanFileBtn = document.getElementById('scan-file-btn');
     const scanWorkspaceBtn = document.getElementById('scan-workspace-btn');
-    const filePill        = document.getElementById('file-pill');
-    const sidebar         = document.querySelector('.sidebar');
-    const dashboardView   = document.getElementById('dashboard-view');
-    const settingsView    = document.getElementById('settings-view');
-    const settingsBtn     = document.getElementById('settings-btn');
-    const backBtn         = document.getElementById('back-btn');
+    const filePill = document.getElementById('file-pill');
+    const sidebar = document.querySelector('.sidebar');
+    const dashboardView = document.getElementById('dashboard-view');
+    const settingsView = document.getElementById('settings-view');
+    const settingsBtn = document.getElementById('settings-btn');
+    const backBtn = document.getElementById('back-btn');
     const browseCompileCommands = document.getElementById('browse-compile-commands');
-    const modeStaticCb    = document.getElementById('mode-static-cb');
-    const modeDynCb       = document.getElementById('mode-dyn-cb');
-    const onlyDirGroup    = document.getElementById('only-dir-group');
+    const staticToolsBtn = document.getElementById('static-tools-btn');
+    const dynamicToolsBtn = document.getElementById('dynamic-tools-btn');
+    const staticToolsMenu = document.getElementById('static-tools-menu');
+    const dynamicToolsMenu = document.getElementById('dynamic-tools-menu');
+    const onlyDirGroup = document.getElementById('only-dir-group');
     const excludeDirGroup = document.getElementById('exclude-dir-group');
-    const crossTuGroup    = document.getElementById('cross-tu-group');
-    const crossTuCb       = document.getElementById('resource-cross-tu');
-    const autoEntryGroup  = document.getElementById('auto-entry-points-group');
-    const autoEntryCb     = document.getElementById('auto-entry-points');
-    const autoEntryHint   = document.getElementById('auto-entry-points-hint');
-    const smtSection      = document.getElementById('smt-section');
-    const profileToggle   = document.getElementById('analysis-profile-toggle');
-    const profileLabel    = document.getElementById('analysis-profile-label');
-    const ikosTool        = document.getElementById('ikos-tool');
-    const ikosCb           = ikosTool ? ikosTool.querySelector('input') : null;
-    const persistedState   = vscode.getState() || {};
+    const crossTuGroup = document.getElementById('cross-tu-group');
+    const crossTuCb = document.getElementById('resource-cross-tu');
+    const autoEntryGroup = document.getElementById('auto-entry-points-group');
+    const autoEntryCb = document.getElementById('auto-entry-points');
+    const autoEntryHint = document.getElementById('auto-entry-points-hint');
+    const smtSection = document.getElementById('smt-section');
+    const profileToggle = document.getElementById('analysis-profile-toggle');
+    const profileLabel = document.getElementById('analysis-profile-label');
+    const ikosCb = document.querySelector('.static-tool[value="ikos"]');
+    const persistedState = vscode.getState() || {};
     let analysisProfile = 'full';
     let findings = [];
     let currentStatus = 'ready';
@@ -74,20 +75,96 @@
     let lastFileName = '';
 
     let scanWorkspace = false;
-    function updateAnalysisModeStyles() {
-        if (modeStaticCb) { modeStaticCb.parentElement.classList.toggle('active', modeStaticCb.checked); }
-        if (modeDynCb) { modeDynCb.parentElement.classList.toggle('active', modeDynCb.checked); }
+    const closeTimeouts = new WeakMap();
+
+    function setToolMenu(button, menu, open) {
+        if (!button || !menu) { return; }
+
+        const existingTimer = closeTimeouts.get(menu);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+            closeTimeouts.delete(menu);
+        }
+
+        if (open) {
+            menu.classList.remove('is-closing');
+            menu.hidden = false;
+            button.setAttribute('aria-expanded', 'true');
+        } else {
+            if (menu.hidden) {
+                button.setAttribute('aria-expanded', 'false');
+                return;
+            }
+            button.setAttribute('aria-expanded', 'false');
+            menu.classList.add('is-closing');
+            const timer = setTimeout(() => {
+                menu.hidden = true;
+                menu.classList.remove('is-closing');
+                closeTimeouts.delete(menu);
+            }, 160);
+            closeTimeouts.set(menu, timer);
+        }
     }
 
-    if (modeStaticCb) { modeStaticCb.addEventListener('change', updateAnalysisModeStyles); }
-    if (modeDynCb) { modeDynCb.addEventListener('change', updateAnalysisModeStyles); }
+    function toggleToolMenu(button, menu) {
+        const isCurrentlyOpen = !menu.hidden && !menu.classList.contains('is-closing');
+        const willOpen = !isCurrentlyOpen;
+        if (willOpen) {
+            // Only allow one dropdown open at a time
+            if (menu === staticToolsMenu) {
+                setToolMenu(dynamicToolsBtn, dynamicToolsMenu, false);
+            } else if (menu === dynamicToolsMenu) {
+                setToolMenu(staticToolsBtn, staticToolsMenu, false);
+            }
+        }
+        setToolMenu(button, menu, willOpen);
+    }
+
+    if (staticToolsBtn) { staticToolsBtn.addEventListener('click', () => toggleToolMenu(staticToolsBtn, staticToolsMenu)); }
+    if (dynamicToolsBtn) { dynamicToolsBtn.addEventListener('click', () => toggleToolMenu(dynamicToolsBtn, dynamicToolsMenu)); }
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.analysis-mode-menu')) {
+            setToolMenu(staticToolsBtn, staticToolsMenu, false);
+            setToolMenu(dynamicToolsBtn, dynamicToolsMenu, false);
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            setToolMenu(staticToolsBtn, staticToolsMenu, false);
+            setToolMenu(dynamicToolsBtn, dynamicToolsMenu, false);
+        }
+    });
+
+    function updateAnalysisModeStyles() {
+        [staticToolsBtn, dynamicToolsBtn].forEach(button => {
+            if (!button) { return; }
+            const menu = button.nextElementSibling;
+            const selected = menu ? menu.querySelectorAll('input:checked').length : 0;
+            button.classList.toggle('active', selected > 0);
+            button.classList.toggle('inactive', selected === 0);
+        });
+    }
+
+    document.querySelectorAll('.static-tool, .dynamic-tool').forEach(control => {
+        control.addEventListener('change', updateAnalysisModeStyles);
+    });
     updateAnalysisModeStyles();
 
     function setScanMode(workspace) {
+        const modeChanged = scanWorkspace !== workspace;
         scanWorkspace = workspace;
+        if (scanModeRow) { scanModeRow.classList.toggle('workspace-active', workspace); }
         if (scanFileBtn) { scanFileBtn.classList.toggle('active', !workspace); }
         if (scanWorkspaceBtn) { scanWorkspaceBtn.classList.toggle('active', workspace); }
-        if (filePill) { filePill.classList.toggle('faded', workspace); }
+        if (filePill) {
+            filePill.classList.remove('faded');
+            if (modeChanged) {
+                filePill.classList.remove('slide-left', 'slide-right');
+                void filePill.offsetWidth;
+                filePill.classList.add(workspace ? 'slide-right' : 'slide-left');
+            }
+        }
         if (fileLabel) {
             fileLabel.textContent = workspace
                 ? 'All C/C++ files in workspace'
@@ -163,7 +240,7 @@
             ikosCb.disabled = Boolean(fast);
             if (fast) { ikosCb.checked = false; }
         }
-        if (ikosTool) { ikosTool.classList.toggle('is-disabled', Boolean(fast)); }
+        if (ikosCb) { ikosCb.disabled = Boolean(fast); }
     }
 
     function setAnalysisProfile(profile) {
@@ -190,8 +267,8 @@
 
         setScanMode(persistedState.scanWorkspace === true);
         setAnalysisProfile(saved.analysisProfile || 'full');
-        setChecked('mode-static-cb', saved.staticEnabled !== false);
-        setChecked('mode-dyn-cb', saved.dynamicEnabled !== false);
+        restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false);
+        restoreToolSelection('.dynamic-tool', saved.dynamicTools, saved.dynamicEnabled !== false);
         setValue('only-function', saved.onlyFunction || '');
         setValue('only-dir', saved.onlyDir || '');
         setValue('exclude-dir', saved.excludeDir || '');
@@ -214,10 +291,6 @@
         setChecked('timing', saved.timing === true);
         setChecked('demangle', saved.demangle === true);
         setChecked('dump-filter', saved.dumpFilter === true);
-
-        document.querySelectorAll('.invoke-tool').forEach(tool => {
-            tool.checked = Array.isArray(saved.invokedTools) && saved.invokedTools.includes(tool.value);
-        });
 
         updateAnalysisModeStyles();
         updateSmtControls();
@@ -263,8 +336,10 @@
     function readCtraceUiState() {
         return {
             scanMode: scanWorkspace ? 'workspace' : 'file',
-            staticEnabled: checked('mode-static-cb'),
-            dynamicEnabled: checked('mode-dyn-cb'),
+            staticTools: selectedTools('.static-tool'),
+            dynamicTools: selectedTools('.dynamic-tool'),
+            staticEnabled: selectedTools('.static-tool').length > 0,
+            dynamicEnabled: selectedTools('.dynamic-tool').length > 0,
             onlyFunction: valueOf('only-function'),
             onlyDir: valueOf('only-dir'),
             excludeDir: valueOf('exclude-dir'),
@@ -278,7 +353,7 @@
             smtTimeoutMs: numberValueOf('smt-timeout-ms'),
             smtRules: valueOf('smt-rules'),
             analysisProfile,
-            invokedTools: selectedInvokeTools(),
+            invokedTools: [],
             compileCommandsPath: valueOf('compile-commands-path'),
             compdbFast: checked('compdb-fast'),
             includeCompdbDeps: checked('include-compdb-deps'),
@@ -294,8 +369,19 @@
     }
 
     function selectedInvokeTools() {
-        return Array.from(document.querySelectorAll('.invoke-tool:checked'))
+        return Array.from(document.querySelectorAll('.static-tool:checked, .dynamic-tool:checked'))
             .map(element => element.value);
+    }
+
+    function selectedTools(selector) {
+        return Array.from(document.querySelectorAll(`${selector}:checked`)).map(element => element.value);
+    }
+
+    function restoreToolSelection(selector, savedTools, enabled) {
+        const selected = Array.isArray(savedTools) ? savedTools : null;
+        document.querySelectorAll(selector).forEach(tool => {
+            tool.checked = selected ? selected.includes(tool.value) : enabled;
+        });
     }
 
     function checked(id) {
@@ -330,10 +416,13 @@
             case 'analysis-result':
                 handleAnalysisResult(msg.data);
                 break;
-<<<<<<< HEAD
             case 'analysis-done':
                 setRunning(false);
                 if (currentStatus === 'running') { setStatus('Ready to audit', '', 'ready'); }
+                break;
+            case 'analysis-error':
+                setRunning(false);
+                setStatus(msg.message || 'Analysis failed', msg.detail || '', 'error');
                 break;
             case 'analysis-progress':
                 setStatus(msg.message || 'Analysing…', msg.detail || '', 'running');
@@ -341,12 +430,6 @@
                 break;
             case 'analysis-status':
                 setStatus(msg.message || 'Analysis complete', msg.detail || '', msg.status || 'ready');
-=======
-            case 'analysis-error':
-                // Ensures the button is never stuck in loading state when
-                // the analysis fails, crashes, or produces no parseable output.
-                setRunning(false);
->>>>>>> cd3ca2ef27d46ff123a8febbfd8447a3cf764b8e
                 break;
             case 'active-file':
                 lastFileName = msg.name || 'No file open';
@@ -384,9 +467,9 @@
         setStatus('Analysis complete', 'Findings are shown below', 'success');
         setProgress(100);
 
-        if (emptyState)      { emptyState.style.display = 'none'; }
-        if (resultsContainer){ resultsContainer.classList.remove('results-hidden'); }
-        if (vulnList)        { vulnList.innerHTML = ''; }
+        if (emptyState) { emptyState.style.display = 'none'; }
+        if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
+        if (vulnList) { vulnList.innerHTML = ''; }
 
         findings = [];
 
@@ -460,34 +543,34 @@
     function addVulnItem(res) {
         if (!vulnList) { return; }
 
-        const level    = (res.level || 'warning').toLowerCase();
-        const ruleId   = res.ruleId || 'Rule';
-        const message  = res.message ? res.message.text : 'Unknown issue';
-        const loc      = res.locations && res.locations[0];
+        const level = (res.level || 'warning').toLowerCase();
+        const ruleId = res.ruleId || 'Rule';
+        const message = res.message ? res.message.text : 'Unknown issue';
+        const loc = res.locations && res.locations[0];
 
-        let locText  = '';
-        let line     = 0;
+        let locText = '';
+        let line = 0;
         let filePath = '';
 
         if (loc && loc.physicalLocation) {
             const pl = loc.physicalLocation;
             if (pl.artifactLocation && pl.artifactLocation.uri) {
                 const parts = pl.artifactLocation.uri.split('/');
-                locText  = parts[parts.length - 1];
+                locText = parts[parts.length - 1];
                 filePath = pl.artifactLocation.uri;
             }
             if (pl.region) {
-                line     = pl.region.startLine || 0;
+                line = pl.region.startLine || 0;
                 locText += `:${line}`;
             }
         }
 
-        const sevClass  = level === 'error' ? 'sev-error' : level === 'note' ? 'sev-note' : 'sev-warning';
-        const sevIcon   = level === 'error' ? 'x-circle' : level === 'note' ? 'info' : 'triangle-alert';
-        const ruleIcon  = 'shield-alert';
+        const sevClass = level === 'error' ? 'sev-error' : level === 'note' ? 'sev-note' : 'sev-warning';
+        const sevIcon = level === 'error' ? 'x-circle' : level === 'note' ? 'info' : 'triangle-alert';
+        const ruleIcon = level === 'error' ? 'shield-alert' : level === 'note' ? 'info' : 'triangle-alert';
 
         const li = document.createElement('li');
-        li.className = 'vuln-item';
+        li.className = `vuln-item vuln-item-${level}`;
         li.innerHTML = `
             <div class="vuln-header">
                 <span class="vuln-rule">
@@ -517,7 +600,7 @@
         if (!str) { return ''; }
         return str
             .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;') .replace(/"/g, '&quot;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
     }
 

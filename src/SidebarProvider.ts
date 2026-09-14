@@ -191,14 +191,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						</button>
 
             <div class="analysis-mode-row" aria-label="Analysis modes">
-              <label class="analysis-mode-toggle active">
-                <input type="checkbox" id="mode-static-cb" checked>
-                <i data-lucide="shield-check"></i><span>Static</span>
-              </label>
-              <label class="analysis-mode-toggle active">
-                <input type="checkbox" id="mode-dyn-cb" checked>
-                <i data-lucide="activity"></i><span>Dynamic</span>
-              </label>
+              <div class="analysis-mode-menu">
+                <button class="analysis-mode-toggle active" id="static-tools-btn" type="button" aria-haspopup="true" aria-expanded="false">
+                  <i data-lucide="shield-check"></i><span>Static</span><i data-lucide="chevron-down" class="mode-chevron"></i>
+                </button>
+                <div class="tool-dropdown" id="static-tools-menu" hidden>
+                  <span class="tool-dropdown-title">Static tools</span>
+                  <label><input type="checkbox" class="static-tool" value="cppcheck" checked><span>cppcheck</span></label>
+                  <label><input type="checkbox" class="static-tool" value="flawfinder" checked><span>flawfinder</span></label>
+                  <label><input type="checkbox" class="static-tool" value="ikos" checked><span>ikos</span></label>
+                  <label><input type="checkbox" class="static-tool" value="tscancode" checked><span>tscancode</span></label>
+                </div>
+              </div>
+              <div class="analysis-mode-menu">
+                <button class="analysis-mode-toggle active" id="dynamic-tools-btn" type="button" aria-haspopup="true" aria-expanded="false">
+                  <i data-lucide="activity"></i><span>Dynamic</span><i data-lucide="chevron-down" class="mode-chevron"></i>
+                </button>
+                <div class="tool-dropdown" id="dynamic-tools-menu" hidden>
+                  <span class="tool-dropdown-title">Dynamic tools</span>
+                  <label><input type="checkbox" class="dynamic-tool" value="ctrace_stack_analyzer" checked><span>ctrace_stack_analyzer</span></label>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -297,18 +310,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               <input type="number" id="smt-timeout-ms" min="1" step="1" placeholder="Optional">
               <label for="smt-rules">SMT Rules</label>
               <input type="text" id="smt-rules" placeholder="recursion,integer-overflow">
-            </div>
-          </details>
-
-          <!-- Analysis tools -->
-          <details class="config-section">
-            <summary><i data-lucide="wrench"></i><span>Analysis Tools</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
-            <div class="config-content tool-list">
-              <label class="config-toggle"><input type="checkbox" class="invoke-tool" value="ctrace_stack_analyzer" checked><span>ctrace_stack_analyzer</span></label>
-              <label class="config-toggle"><input type="checkbox" class="invoke-tool" value="cppcheck"><span>cppcheck</span></label>
-              <label class="config-toggle"><input type="checkbox" class="invoke-tool" value="flawfinder"><span>flawfinder</span></label>
-              <label class="config-toggle" id="ikos-tool"><input type="checkbox" class="invoke-tool" value="ikos"><span>ikos</span></label>
-              <label class="config-toggle"><input type="checkbox" class="invoke-tool" value="tscancode"><span>tscancode</span></label>
             </div>
           </details>
 

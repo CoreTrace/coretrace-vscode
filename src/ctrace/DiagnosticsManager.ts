@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 
 /**
@@ -6,8 +7,8 @@ import * as path from 'path';
  * provided DiagnosticCollection.
  *
  * Each result is mapped to its actual file path as declared in the SARIF
- * `artifactLocation.uri` field (resolved relative to `analysedFilePath`).
- * Falls back to `analysedFilePath` when no URI is present.
+ * rtifactLocation.uri field (resolved relative to workspace root or nalysedFilePath).
+ * Falls back to nalysedFilePath when no URI is present.
  *
  * @param clearFirst  Set to false when calling inside a workspace scan loop
  *                    to avoid wiping earlier results. Caller must clear once
@@ -28,6 +29,7 @@ export function updateDiagnostics(
     // Group diagnostics by resolved absolute file path
     const byFile = new Map<string, vscode.Diagnostic[]>();
     const fileDir = path.dirname(analysedFilePath);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
     for (const result of allResults) {
         const physLoc = result.locations?.[0]?.physicalLocation;
@@ -40,11 +42,14 @@ export function updateDiagnostics(
         if (uriStr) {
             if (uriStr.startsWith('file://')) {
                 targetFile = vscode.Uri.parse(uriStr).fsPath;
-            } else if (path.isAbsolute(uriStr)) {
+            } else if (workspaceRoot && fs.existsSync(path.resolve(workspaceRoot, uriStr))) {
+                targetFile = path.resolve(workspaceRoot, uriStr);
+            } else if (fs.existsSync(uriStr)) {
                 targetFile = uriStr;
-            } else {
-                // Relative URI — resolve against the analysed file's directory
+            } else if (fs.existsSync(path.resolve(fileDir, uriStr))) {
                 targetFile = path.resolve(fileDir, uriStr);
+            } else {
+                targetFile = analysedFilePath;
             }
         }
 
