@@ -11,6 +11,8 @@ import { updateDiagnostics } from './ctrace/DiagnosticsManager';
 import { buildCtraceArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
 import { getFunctionSymbols } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
+import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
+import { clearCache } from './ctrace/WorkspaceScanner';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -27,6 +29,19 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('ctrace-audit-view', sidebarProvider)
     );
+
+    setBinaryUpdateListener((msg) => {
+        if (msg === '__done__') {
+            sidebarProvider.postMessage({ type: 'analysis-download-complete' });
+            return;
+        }
+        sidebarProvider.postMessage({ type: 'analysis-downloading', progress: msg });
+    });
+
+    // Initialise and pre-fetch the binary in the background on startup
+    ensureBinary(context, output).catch((err) => {
+        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
+    });
 
     const codeLensProvider = new CtraceCodeLensProvider();
     for (const language of ['c', 'cpp', 'objective-c', 'objective-cpp']) {
@@ -64,13 +79,21 @@ export function activate(context: vscode.ExtensionContext) {
         return p;
     }
 
-    // ── Command: ctrace.runWorkspaceAnalysis ─────────────────────────────────
-    // Scans the workspace for C/C++ files, hands compile_commands.json to
-    // ctrace when available, and runs a file-by-file analysis otherwise.
-    // Only files whose content changed since the last run are re-analysed;
-    // the rest are served from the in-process hash cache.
+    // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
+            if (isRunning) {
+                vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
+
+            if (isUpdatingBinary()) {
+                vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
+
             const uiState: CtraceUIState = arg?.uiState ?? {};
             const scanMode: 'file' | 'workspace' = arg?.scanMode === 'workspace' || arg?.scanWorkspace === true
                 ? 'workspace'
@@ -80,7 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!workspaceRoot) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
-                sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
 
@@ -123,14 +146,14 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             // ── Locate binary ────────────────────────────────────────────────
-            const ctracePath = locateBinary(context.extensionUri.fsPath);
+            const ctracePath = await locateOrError();
             if (!ctracePath) {
-                vscode.window.showErrorMessage(
-                    `Ctrace binary not found in extension folder: ${context.extensionUri.fsPath}`
-                );
-                sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
+
+            isRunning = true;
+            sidebarProvider.postMessage({ type: 'analysis-start' });
 
             const extensionPath = context.extensionUri.fsPath;
             const ctraceConfig = vscode.workspace.getConfiguration('ctrace');
@@ -209,7 +232,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 reportFile: reportPath,
                                 configFile: hasConfig ? configPath : undefined,
                             }, ctraceConfig);
-                            const { command, tempFiles } = buildCommand(ctracePath, fp, shellQuoteArgs(args));
+                            const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args));
                             tryDelete(reportPath);
 
                             output.appendLine(`\n${'─'.repeat(60)}`);
@@ -238,7 +261,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 vscode.window.showWarningMessage(`Analysis of ${fileName} timed out (60s).`);
                             }
 
-                            const sarif = parseSarifOutput(stdout, reportPath);
+                            const sarif = await parseSarifOutput(stdout, reportPath);
                             tryDelete(reportPath);
                             if (sarif) {
                                 allSarif.push(sarif);
@@ -305,10 +328,27 @@ export function activate(context: vscode.ExtensionContext) {
                         if (hasConfig) {
                             tryDelete(configPath);
                         }
-                        sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                        isRunning = false;
+                        sidebarProvider.postMessage({ type: 'analysis-done' });
                     }
                 }
             );
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.runWorkspaceAnalysis', async (arg?: any) => {
+            const payload = typeof arg === 'object' && arg !== null
+                ? { ...arg, scanMode: 'workspace' }
+                : { scanMode: 'workspace' };
+            return vscode.commands.executeCommand('ctrace.runAnalysis', payload);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.clearAnalysisCache', () => {
+            clearCache();
+            vscode.window.showInformationMessage('Ctrace analysis cache cleared.');
         })
     );
 
@@ -327,13 +367,15 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.showHelp', async () => {
-            const ctracePath = locateBinary(context.extensionUri.fsPath);
+            const ctracePath = await locateOrError();
             if (!ctracePath) {
                 vscode.window.showErrorMessage('Ctrace binary not found in the extension folder.');
                 return;
             }
 
-            const command = `chmod +x "${ctracePath}" && "${ctracePath}" --help`;
+            const command = process.platform === 'win32'
+                ? `wsl "${ctracePath}" --help`
+                : `chmod +x "${ctracePath}" && "${ctracePath}" --help`;
             const { stdout, stderr, exitCode } = await runCommand(command, context.extensionUri.fsPath);
             output.clear();
             output.appendLine('$ ' + command);

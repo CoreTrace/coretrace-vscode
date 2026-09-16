@@ -1,21 +1,22 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SarifLog } from '../types/sarif';
 
 /**
  * Translates a SARIF result set into VS Code Diagnostics and updates the
  * provided DiagnosticCollection.
  *
  * Each result is mapped to its actual file path as declared in the SARIF
- * rtifactLocation.uri field (resolved relative to workspace root or nalysedFilePath).
- * Falls back to nalysedFilePath when no URI is present.
+ * artifactLocation.uri field (resolved relative to workspace root or analysedFilePath).
+ * Falls back to analysedFilePath when no URI is present.
  *
  * @param clearFirst  Set to false when calling inside a workspace scan loop
  *                    to avoid wiping earlier results. Caller must clear once
  *                    before the loop instead.
  */
 export function updateDiagnostics(
-    sarifData: SarifLog,
+    sarifData: SarifLog | any,
     collection: vscode.DiagnosticCollection,
     analysedFilePath: string,
     clearFirst = true
@@ -59,14 +60,20 @@ export function updateDiagnostics(
         const endLine   = Math.max(startLine, ((region.endLine   || region.startLine   || 1) - 1));
         const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
 
-            const startLine = Math.max(0, (region.startLine ?? 1) - 1);
-            const startCol  = Math.max(0, (region.startColumn ?? 1) - 1);
-            const endLine   = Math.max(startLine,   ((region.endLine   || region.startLine   || 1) - 1));
-            const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
+        const range      = new vscode.Range(startLine, startCol, endLine, endCol);
+        const message    = result.message?.text ?? 'Unknown issue';
+        const severity   = sarifLevelToVsCode(result.level);
+        const diagnostic = new vscode.Diagnostic(range, message, severity);
+        diagnostic.source = 'Ctrace';
+        diagnostic.code   = result.ruleId;
 
         if (!byFile.has(targetFile)) { byFile.set(targetFile, []); }
         byFile.get(targetFile)!.push(diagnostic);
     }
+
+    byFile.forEach((diagnostics, fp) => {
+        collection.set(vscode.Uri.file(fp), diagnostics);
+    });
 }
 
 /**
@@ -90,13 +97,8 @@ function normaliseMountPath(p: string): string {
     );
 }
 
-    byFile.forEach((diagnostics, fp) => {
-        collection.set(vscode.Uri.file(fp), diagnostics);
-    });
-}
-
-function sarifLevelToVsCode(level: 'error' | 'warning' | 'note' | 'none' | undefined): vscode.DiagnosticSeverity {
-    switch (level) {
+function sarifLevelToVsCode(level: 'error' | 'warning' | 'note' | 'none' | string | undefined): vscode.DiagnosticSeverity {
+    switch ((level ?? '').toLowerCase()) {
         case 'error':   return vscode.DiagnosticSeverity.Error;
         case 'warning': return vscode.DiagnosticSeverity.Warning;
         case 'note':    return vscode.DiagnosticSeverity.Information;

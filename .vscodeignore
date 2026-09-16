@@ -1,0 +1,17 @@
+﻿.vscode/**
+.vscode-test/**
+out/test/**
+src/**
+.gitignore
+.git/**
+tsconfig.json
+.vscode-test.js
+test_compile_cmd/**
+tests/**
+ROADMAP.md
+scripts/**
+**/*.map
+.github/**
+ccoretrace-sarif-tscancode.json
+ctrace-report.txt
+process.log

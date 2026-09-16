@@ -6,9 +6,14 @@ import * as path from 'path';
  * Returns the resolved path, or null if not found.
  */
 export async function locateBinary(extensionPath: string): Promise<string | null> {
-    const candidates = ['ctrace', 'coretrace'];
+    const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
 
     for (const name of candidates) {
+        const candidateInBin = path.join(extensionPath, 'bin', name);
+        if (await isExecutableFile(candidateInBin)) {
+            return candidateInBin;
+        }
+
         const candidate = path.join(extensionPath, name);
         if (await isExecutableFile(candidate)) {
             return candidate;

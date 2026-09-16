@@ -1,9 +1,22 @@
 import * as vscode from "vscode";
 
-export class SidebarProvider implements vscode.WebviewViewProvider {
+export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
+  private _disposables: vscode.Disposable[] = [];
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
+
+  public dispose(): void {
+    while (this._disposables.length) {
+      const d = this._disposables.pop();
+      d?.dispose();
+    }
+    this._view = undefined;
+  }
+
+  public postMessage(msg: any): Thenable<boolean> | undefined {
+    return this._view?.webview.postMessage(msg);
+  }
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -28,6 +41,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     postActiveFile(vscode.window.activeTextEditor);
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
+    this._disposables.push(activeEditorListener);
     webviewView.onDidDispose(() => activeEditorListener.dispose());
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
@@ -48,7 +62,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         case "execute-command": {
             // Only allow explicitly whitelisted commands to prevent arbitrary command execution
-            const allowedCommands = ['ctrace.runAnalysis'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
