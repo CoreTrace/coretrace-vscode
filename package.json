@@ -2,7 +2,7 @@
   "name": "ctrace-audit",
   "displayName": "Ctrace Audit",
   "description": "Integration for Ctrace CLI Audit Tool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "CoreTrace",
   "icon": "icon.png",
   "galleryBanner": {
