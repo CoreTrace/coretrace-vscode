@@ -1,58 +1,79 @@
 import * as vscode from 'vscode';
-import * as path   from 'path';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { SarifLog } from '../types/sarif';
 
 /**
  * Translates a SARIF result set into VS Code Diagnostics and updates the
  * provided DiagnosticCollection.
  *
- * Results are grouped by their `artifactLocation.uri` so that issues reported
- * in header files or other translation units land on the correct document.
- * When a URI cannot be resolved the `fallbackFilePath` is used instead.
+ * Each result is mapped to its actual file path as declared in the SARIF
+ * artifactLocation.uri field (resolved relative to workspace root or analysedFilePath).
+ * Falls back to analysedFilePath when no URI is present.
+ *
+ * @param clearFirst  Set to false when calling inside a workspace scan loop
+ *                    to avoid wiping earlier results. Caller must clear once
+ *                    before the loop instead.
  */
 export function updateDiagnostics(
-    sarifData: SarifLog,
+    sarifData: SarifLog | any,
     collection: vscode.DiagnosticCollection,
-    fallbackFilePath: string
+    analysedFilePath: string,
+    clearFirst = true
 ): void {
-    collection.clear();
+    if (clearFirst) { collection.clear(); }
 
     if (!sarifData?.runs?.length) { return; }
 
-    // Map from resolved fs-path → diagnostics for that file.
+    const allResults: any[] = sarifData.runs.flatMap((r: any) => r.results ?? []);
+
+    // Group diagnostics by resolved absolute file path
     const byFile = new Map<string, vscode.Diagnostic[]>();
+    const fileDir = path.dirname(analysedFilePath);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-    const push = (fsPath: string, d: vscode.Diagnostic) => {
-        const list = byFile.get(fsPath);
-        if (list) { list.push(d); } else { byFile.set(fsPath, [d]); }
-    };
+    for (const result of allResults) {
+        const physLoc = result.locations?.[0]?.physicalLocation;
+        const region  = physLoc?.region;
+        if (!region) { continue; }
 
-    for (const run of sarifData.runs) {
-        for (const result of (run.results ?? [])) {
-            const region = result.locations?.[0]?.physicalLocation?.region;
-            if (!region) { continue; }
-
-            const startLine = Math.max(0, (region.startLine ?? 1) - 1);
-            const startCol  = Math.max(0, (region.startColumn ?? 1) - 1);
-            const endLine   = Math.max(startLine,   ((region.endLine   || region.startLine   || 1) - 1));
-            const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
-
-            const range      = new vscode.Range(startLine, startCol, endLine, endCol);
-            const message    = result.message?.text ?? 'Unknown issue';
-            const severity   = sarifLevelToVsCode(result.level);
-            const diagnostic = new vscode.Diagnostic(range, message, severity);
-            diagnostic.source = 'Ctrace';
-            diagnostic.code   = result.ruleId;
-
-            const artifactUri = result.locations?.[0]?.physicalLocation?.artifactLocation?.uri;
-            const fsPath = resolveArtifactPath(artifactUri, fallbackFilePath);
-            push(fsPath, diagnostic);
+        // ── Resolve the target file ───────────────────────────────────────────
+        let targetFile = analysedFilePath;
+        const uriStr: string | undefined = physLoc?.artifactLocation?.uri;
+        if (uriStr) {
+            if (uriStr.startsWith('file://')) {
+                targetFile = vscode.Uri.parse(uriStr).fsPath;
+            } else if (workspaceRoot && fs.existsSync(path.resolve(workspaceRoot, uriStr))) {
+                targetFile = path.resolve(workspaceRoot, uriStr);
+            } else if (fs.existsSync(uriStr)) {
+                targetFile = uriStr;
+            } else if (fs.existsSync(path.resolve(fileDir, uriStr))) {
+                targetFile = path.resolve(fileDir, uriStr);
+            } else {
+                targetFile = analysedFilePath;
+            }
         }
+
+        // ── Build range (SARIF lines are 1-based) ────────────────────────────
+        const startLine = Math.max(0, (region.startLine ?? 1) - 1);
+        const startCol  = Math.max(0, (region.startColumn ?? 1) - 1);
+        const endLine   = Math.max(startLine, ((region.endLine   || region.startLine   || 1) - 1));
+        const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
+
+        const range      = new vscode.Range(startLine, startCol, endLine, endCol);
+        const message    = result.message?.text ?? 'Unknown issue';
+        const severity   = sarifLevelToVsCode(result.level);
+        const diagnostic = new vscode.Diagnostic(range, message, severity);
+        diagnostic.source = 'Ctrace';
+        diagnostic.code   = result.ruleId;
+
+        if (!byFile.has(targetFile)) { byFile.set(targetFile, []); }
+        byFile.get(targetFile)!.push(diagnostic);
     }
 
-    for (const [fsPath, diagnostics] of byFile) {
-        collection.set(vscode.Uri.file(fsPath), diagnostics);
-    }
+    byFile.forEach((diagnostics, fp) => {
+        collection.set(vscode.Uri.file(fp), diagnostics);
+    });
 }
 
 /**
@@ -76,38 +97,8 @@ function normaliseMountPath(p: string): string {
     );
 }
 
-/**
- * Resolves a SARIF `artifactLocation.uri` to an absolute filesystem path.
- *
- * Resolution order:
- * 1. `file://` URI              → strip scheme, decode percent-encoding, normalise WSL mount
- * 2. WSL `/mnt/<drive>/` path  → convert to `<DRIVE>:/` (Windows only)
- * 3. Other absolute POSIX path  → use as-is
- * 4. Relative path              → resolve against the directory of `fallbackFilePath`
- * 5. Missing / unparseable      → return `fallbackFilePath`
- */
-function resolveArtifactPath(uri: string | undefined, fallbackFilePath: string): string {
-    if (!uri) { return fallbackFilePath; }
-    try {
-        if (uri.startsWith('file://')) {
-            // vscode.Uri.parse handles percent-encoding and platform differences.
-            return normaliseMountPath(vscode.Uri.parse(uri).fsPath);
-        }
-        if (path.isAbsolute(uri)) {
-            // Absolute paths from WSL may use /mnt/<drive>/... notation on
-            // Windows; normalise them so vscode.Uri.file() maps to the correct
-            // workspace document.
-            return normaliseMountPath(uri);
-        }
-        // Relative path — resolve against the directory of the analysed file.
-        return path.resolve(path.dirname(fallbackFilePath), uri);
-    } catch {
-        return fallbackFilePath;
-    }
-}
-
-function sarifLevelToVsCode(level: 'error' | 'warning' | 'note' | 'none' | undefined): vscode.DiagnosticSeverity {
-    switch (level) {
+function sarifLevelToVsCode(level: 'error' | 'warning' | 'note' | 'none' | string | undefined): vscode.DiagnosticSeverity {
+    switch ((level ?? '').toLowerCase()) {
         case 'error':   return vscode.DiagnosticSeverity.Error;
         case 'warning': return vscode.DiagnosticSeverity.Warning;
         case 'note':    return vscode.DiagnosticSeverity.Information;

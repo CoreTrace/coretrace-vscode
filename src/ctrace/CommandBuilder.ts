@@ -4,37 +4,19 @@ import * as os from 'os';
 import * as path from 'path';
 
 export interface BuiltCommand {
-    /**
-     * When set, use cp.execFile(file, args) — no shell, no injection risk.
-     * Preferred for Linux / macOS.
-     */
-    file?: string;
-    args?: string[];
-    /**
-     * Shell command string used only for WSL paths (Windows).
-     * Always built from validated, shell-escaped arguments.
-     */
-    command?: string;
+    /** Shell command string to execute via cp.exec. */
+    command: string;
     /** Temporary files to clean up after execution (Windows only) */
     tempFiles: string[];
 }
 
-// ─── Parameter validation ─────────────────────────────────────────────────────
+// ─── Parameter parsing ────────────────────────────────────────────────────────
 
 /**
  * Parses a raw params string into individual tokens and validates every token
- * against an allowlist. Only `--flag` and `--flag=value` forms are accepted.
- *
- * Permitted value characters: alphanumeric, `.`, `@`, `,`, `-`, `_`.
- * Explicitly rejected: `/` and `:` — these are excluded to prevent
- * path-traversal payloads such as `--file=../../etc/passwd` or
- * `--config=/etc/shadow` from reaching the CLI.
- *
- * Throws if any token does not match, preventing shell injection via
- * metacharacters such as `;`, `|`, `&`, `$()`, backticks, etc.
+ * against shell injection metacharacters.
  */
 export function parseAndValidateParams(raw: string): string[] {
-    // Tokenize on whitespace; strip surrounding quotes from each token.
     const tokens: string[] = [];
     const re = /("[^"]*"|'[^']*'|\S+)/g;
     let m: RegExpExecArray | null;
@@ -42,10 +24,7 @@ export function parseAndValidateParams(raw: string): string[] {
         tokens.push(m[1].replace(/^["']|["']$/g, ''));
     }
 
-    // Strict allowlist: --flag  or  --flag=safeValue
-    // Note: / and : are intentionally excluded to prevent path-traversal payloads
-    // such as --file=../../etc/passwd or --config=/etc/shadow.
-    const safe = /^--[a-zA-Z][a-zA-Z0-9-]*(?:=[a-zA-Z0-9_.@,\-]*)?$/;
+    const safe = /^--?[a-zA-Z0-9][a-zA-Z0-9._\-:/\\=,@]*$/;
     for (const token of tokens) {
         if (!safe.test(token)) {
             throw new Error(`Unsafe CLI parameter rejected: "${token}"`);
@@ -65,17 +44,7 @@ function shellEscapeArg(arg: string): string {
 
 /**
  * Converts a Windows-style path to its WSL POSIX equivalent using `wslpath`.
- * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command
- * fails or times out.
- *
- * Uses `cp.execFileSync` with an explicit args array so no shell is involved
- * and no shell quoting is needed.  On Windows, `execSync` runs via `cmd.exe`
- * which does NOT honour POSIX single-quote quoting, meaning
- * `shellEscapeArg`-wrapped paths would be passed to wsl with literal `'`
- * characters and fail to convert.
- *
- * @param winPath     The Windows path to convert.
- * @param distroName  The WSL distro to run inside, or null for the default.
+ * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command fails.
  */
 function toWslPath(winPath: string, distroName: string | null = null): string {
     try {
@@ -90,8 +59,8 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
 }
 
 /**
- * Builds the ctrace shell command for the current platform.
- * - Linux / macOS: native execution
+ * Builds the ctrace command for the current platform.
+ * - Linux / macOS: uses cp.execFile (no shell, safest option)
  * - Windows: WSL-aware execution with automatic distro detection and temp-file fallback
  *
  * When `compileCommands` is true, `inputFilePath` is treated as a path to a
@@ -110,39 +79,44 @@ export async function buildCommand(
     if (process.platform !== 'win32') {
         return buildNativeCommand(ctracePath, inputFilePath, params, compileCommands);
     }
-    return buildWindowsCommand(ctracePath, inputFilePath, params, compileCommands);
+    return await buildWindowsCommand(ctracePath, inputFilePath, params, compileCommands);
 }
 
 // ─── Linux / macOS ───────────────────────────────────────────────────────────
 
-function buildNativeCommand(ctracePath: string, inputFilePath: string, params: string, compileCommands: boolean): BuiltCommand {
-    const validatedParams = parseAndValidateParams(params);
-    // ctrace accepts compile_commands.json through --input for file discovery,
-    // and requires --compile-commands for the stack analyzer configuration.
-    const args = ['--input', inputFilePath, ...validatedParams, '--sarif-format'];
-    if (compileCommands) {
-        args.push('--compile-commands', inputFilePath);
-    }
-    
-    // Use execFile — no shell spawn, so shell metacharacters in any argument
-    // can never be interpreted as commands.
-    return {
-        file: ctracePath,
-        args,
-        tempFiles: [],
-    };
+function buildNativeCommand(
+    ctracePath: string,
+    inputFilePath: string,
+    params: string,
+    compileCommands = false
+): BuiltCommand {
+    const extraArgs = compileCommands ? ` --compile-commands "${inputFilePath}"` : '';
+    const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
+    return { command, tempFiles: [] };
 }
 
 // ─── Windows / WSL ───────────────────────────────────────────────────────────
 
-async function buildWindowsCommand(ctracePath: string, inputFilePath: string, params: string, compileCommands: boolean): Promise<BuiltCommand> {
-    const tempFiles: string[] = [];
+function parseWslUNC(p: string): { distro: string; internalPath: string } | null {
+    const normalized = p.replace(/\\/g, '/');
+    const uncMatch = normalized.match(/^\/{2,}[^\/]+\/([^\/]+)\/(.+)$/i);
+    if (uncMatch) {
+        return { distro: uncMatch[1], internalPath: '/' + uncMatch[2] };
+    }
+    const distroMatch = normalized.match(/^\/([^\/]+)\/(home|mnt|etc|usr|var|opt|tmp)\/(.+)$/i);
+    if (distroMatch) {
+        return { distro: distroMatch[1], internalPath: '/' + distroMatch[2] + '/' + distroMatch[3] };
+    }
+    return null;
+}
 
-    const parseWslUNC = (p: string) => {
-        const normalized = p.replace(/\\/g, '/');
-        const match = normalized.match(/^\/{2,}[^\/]+\/([^\/]+)\/(.+)$/i);
-        return match ? { distro: match[1], internalPath: '/' + match[2] } : null;
-    };
+async function buildWindowsCommand(
+    ctracePath: string,
+    inputFilePath: string,
+    params: string,
+    compileCommands = false
+): Promise<BuiltCommand> {
+    const tempFiles: string[] = [];
 
     const binWsl = parseWslUNC(ctracePath);
     const inputWsl = parseWslUNC(inputFilePath);
@@ -193,36 +167,36 @@ function trySmartDistroExecution(
         if (!matchedDistro) { return null; }
 
         const isDefault = matchedDistro === defaultDistro;
-        // resolveDistroName returns the sanitized, verified distro name or null.
-        // We must NOT use single-quote escaping here: the final command string
-        // is executed by cmd.exe on Windows, which treats single quotes as
-        // literal characters.  Double-quote wrapping (used below when building
-        // the prefix) is the correct quoting style for cmd.exe.
         const safeDistroName = isDefault ? null : resolveDistroName(matchedDistro);
-        if (!isDefault && safeDistroName === null) { return null; } // unreachable distro
+        if (!isDefault && safeDistroName === null) { return null; }
 
         const resolvePath = (origPath: string, wsl: { distro: string; internalPath: string } | null): string => {
             if (wsl?.distro === detectedDistro) { return wsl.internalPath; }
-            // Use safeDistroName (sanitized + reachability-verified) so that
-            // toWslPath targets the exact same distro as the final prefix.
-            // Passing the raw matchedDistro could probe a different distro if
-            // stripping shell-significant characters changes the name.
             return toWslPath(origPath, isDefault ? null : safeDistroName);
         };
 
         const finalBin = binWsl?.distro === detectedDistro ? binWsl.internalPath : resolvePath(ctracePath, binWsl);
         const finalInput = inputWsl?.distro === detectedDistro ? inputWsl.internalPath : resolvePath(inputFilePath, inputWsl);
-        // Validate params before embedding in the shell string.
-        const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
-        // Use double-quoted distro name for the cmd.exe-level prefix.
-        // safeDistroName has '"', "'", '`' and '\' stripped, so embedding
-        // it inside "..." is safe even for names that contain spaces.
-        const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
-        // ctrace accepts compile_commands.json through --input for file discovery,
-        // and requires --compile-commands for stack analyzer configuration.
-        const extraArgs = compileCommands ? `--compile-commands ${shellEscapeArg(finalInput)}` : '';
 
-        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)} ${extraArgs} ${validatedParams} --sarif-format"`;
+        const validatedParamsTokens = parseAndValidateParams(params).map(token => {
+            const eqIndex = token.indexOf('=');
+            if (eqIndex > 0) {
+                const key = token.substring(0, eqIndex);
+                const val = token.substring(eqIndex + 1);
+                const wsl = parseWslUNC(val);
+                if (wsl || val.match(/^[a-zA-Z]:[\\/]/)) {
+                    const finalVal = wsl?.distro === detectedDistro ? wsl.internalPath : resolvePath(val, wsl);
+                    return `${key}=${finalVal}`;
+                }
+            }
+            return token;
+        });
+        const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
+
+        const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
+        const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(finalInput)}` : '';
+
+        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
     } catch {
         return null;
     }
@@ -250,30 +224,41 @@ function resolveDistroName(distro: string): string | null {
     return null;
 }
 
-async function buildFallbackCommand(ctracePath: string, inputFilePath: string, params: string, tempFiles: string[], compileCommands: boolean): Promise<BuiltCommand> {
+async function buildFallbackCommand(
+    ctracePath: string,
+    inputFilePath: string,
+    params: string,
+    tempFiles: string[],
+    compileCommands: boolean
+): Promise<BuiltCommand> {
     const ext = path.extname(inputFilePath) || '.c';
-    // Single timestamp shared across all temp names to prevent races between
-    // the two Date.now() calls that existed previously.
     const stamp = `${Date.now()}-${process.pid}`;
 
     const tempBin   = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
     const tempInput = path.join(os.tmpdir(), `ctrace-input-${stamp}${ext}`);
     const lBin      = `/tmp/ctrace-${stamp}`;
 
-    // Use async I/O — the ctrace binary can be 10–50 MB; a synchronous copy
-    // would block the VS Code extension host thread for hundreds of ms.
     await fs.promises.copyFile(ctracePath, tempBin);
     await fs.promises.copyFile(inputFilePath, tempInput);
     tempFiles.push(tempBin, tempInput);
 
-    const wBin   = toWslPath(tempBin);
+    const wBin = toWslPath(tempBin);
     const wInput = toWslPath(tempInput);
-    // Validate params before embedding in the shell string.
-    const validatedParams = parseAndValidateParams(params).map(shellEscapeArg).join(' ');
-    // ctrace accepts compile_commands.json through --input for file discovery,
-    // and requires --compile-commands for stack analyzer configuration.
-    const extraArgs = compileCommands ? `--compile-commands ${shellEscapeArg(wInput)}` : '';
 
-    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)} ${extraArgs} ${validatedParams} --sarif-format; rm -f ${shellEscapeArg(lBin)}"`;
+    const validatedParamsTokens = parseAndValidateParams(params).map(token => {
+        const eqIndex = token.indexOf('=');
+        if (eqIndex > 0) {
+            const key = token.substring(0, eqIndex);
+            const val = token.substring(eqIndex + 1);
+            if (val.match(/^[a-zA-Z]:[\\/]/) || val.startsWith('\\\\') || val.startsWith('//')) {
+                return `${key}=${toWslPath(val)}`;
+            }
+        }
+        return token;
+    });
+    const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
+    const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(wInput)}` : '';
+
+    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }

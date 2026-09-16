@@ -4,9 +4,10 @@ on:
   push:
     tags:
       - 'v*' # Se déclenche uniquement quand on pousse un tag, ex: git tag v0.1.1 && git push --tags
+
 jobs:
-  publish:
-    name: Publish Extension
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -24,5 +25,46 @@ jobs:
       - name: Run Tests
         run: xvfb-run -a npm test
 
-      - name: Publish Pre-release (Beta)
-        run: npx @vscode/vsce publish --pre-release --pat ${{ secrets.VSCE_PAT }}
+  publish-target:
+    name: Publish for ${{ matrix.target }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux-x64
+            asset_os: linux
+            asset_arch: amd64
+          - target: linux-arm64
+            asset_os: linux
+            asset_arch: arm64
+          - target: win32-x64
+            asset_os: linux
+            asset_arch: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile Extension
+        run: npm run compile
+
+      - name: Download and bundle CoreTrace release
+        run: |
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/CoreTrace/coretrace/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          ASSET_NAME="coretrace-${LATEST_RELEASE}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz"
+          URL="https://github.com/CoreTrace/coretrace/releases/download/${LATEST_RELEASE}/${ASSET_NAME}"
+          echo "Fetching CoreTrace release ${URL}..."
+          curl -sL "${URL}" | tar -xz --strip-components=1
+          chmod +x bin/ctrace || true
+
+      - name: Publish Target VSIX to Marketplace
+        run: npx @vscode/vsce publish --target ${{ matrix.target }} --pre-release --pat ${{ secrets.VSCE_PAT }}

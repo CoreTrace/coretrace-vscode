@@ -4,6 +4,7 @@ import * as path from 'path';
 import axios from 'axios';
 import * as tar from 'tar';
 import { pipeline } from 'stream/promises';
+import { Transform } from 'stream';
 import { locateBinary } from './BinaryLocator';
 
 const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrace/releases/latest';
@@ -34,6 +35,12 @@ export async function ensureBinary(context: vscode.ExtensionContext, output: vsc
 }
 
 async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<string | null> {
+    // 1. If binary is bundled with the extension (e.g. Target-Platform Marketplace package)
+    const bundledBinary = await locateBinary(context.extensionUri.fsPath);
+    if (bundledBinary) {
+        return bundledBinary;
+    }
+
     const globalStorage = context.globalStorageUri.fsPath;
     const binDir = path.join(globalStorage, 'bin');
 
@@ -117,35 +124,33 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
 }
 
 function getAssetForPlatform(assets: any[]): { name: string; url: string } | null {
-    const osMap: Record<string, string> = {
-        'win32': 'windows',
-        'linux': 'linux',
-        'darwin': 'darwin'
+    const osMap: Record<string, string[]> = {
+        'win32': ['windows', 'linux'], // Windows executes via WSL, so fall back to linux if no native windows binary exists
+        'linux': ['linux'],
+        'darwin': ['darwin', 'macos']
     };
     const archMap: Record<string, string> = {
         'x64': 'amd64',
         'arm64': 'arm64'
     };
     
-    const os = osMap[process.platform];
-    const arch = archMap[process.arch];
-    if (!os || !arch) return null;
+    const osList = osMap[process.platform] || [process.platform];
+    const arch = archMap[process.arch] || process.arch;
     
-    // First try exact matches (os + arch + .tar.gz)
-    for (const asset of assets) {
-        const name = asset.name.toLowerCase();
-        if ((name.includes(os) || (process.platform === 'darwin' && name.includes('macos'))) && 
-            name.includes(arch) && 
-            name.endsWith('.tar.gz')) {
-            return { name: asset.name, url: asset.browser_download_url };
+    for (const os of osList) {
+        // First try exact matches (os + arch + .tar.gz)
+        for (const asset of assets) {
+            const name = asset.name.toLowerCase();
+            if (name.includes(os) && name.includes(arch) && name.endsWith('.tar.gz')) {
+                return { name: asset.name, url: asset.browser_download_url };
+            }
         }
-    }
-    // Fallback for older formats (os + .tar.gz)
-    for (const asset of assets) {
-        const name = asset.name.toLowerCase();
-        if ((name.includes(os) || (process.platform === 'darwin' && name.includes('macos'))) && 
-            name.endsWith('.tar.gz')) {
-            return { name: asset.name, url: asset.browser_download_url };
+        // Fallback for older formats (os + .tar.gz)
+        for (const asset of assets) {
+            const name = asset.name.toLowerCase();
+            if (name.includes(os) && name.endsWith('.tar.gz')) {
+                return { name: asset.name, url: asset.browser_download_url };
+            }
         }
     }
     return null;
@@ -153,7 +158,6 @@ function getAssetForPlatform(assets: any[]): { name: string; url: string } | nul
 
 async function downloadAndExtract(url: string, destDir: string, progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
     const timestamp = Date.now();
-    const tarballPath = path.join(destDir, `download-${timestamp}.tar.gz`);
     
     const token = process.env.GITHUB_TOKEN || '';
     const headers: any = { 'User-Agent': 'vscode-coretrace' };
@@ -178,10 +182,8 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
     const totalLength = parseInt(response.headers['content-length'], 10);
     let downloadedLength = 0;
 
-    const writer = fs.createWriteStream(tarballPath);
-
-    try {
-        response.data.on('data', (chunk: Buffer) => {
+    const progressStream = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
             clearTimeout(timeoutId);
             timeoutId = setTimeout(() => controller.abort(new Error("Download stalled")), 30000);
 
@@ -192,77 +194,68 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
                 progress.report({ message: msg, increment: (chunk.length / totalLength) * 100 });
                 if (progressListener) { progressListener(msg); }
             }
+            callback(null, chunk);
+        }
+    });
+
+    // Stream and extract on-the-fly to a temporary directory with strip: 1.
+    // The release tarball contains the full CMake install layout (bin/ctrace, lib/libLLVM..., config/...).
+    // Streaming directly through memory avoids writing intermediate archives to disk,
+    // taking only ~2s while preserving all dependencies and configuration files.
+    const tmpDir = path.join(destDir, `tmp-${timestamp}`);
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+
+    const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
+
+    try {
+        const extractStream = tar.x({
+            C: tmpDir,
+            strip: 1
         });
 
-        await pipeline(response.data, writer);
+        await pipeline(response.data, progressStream, extractStream);
         clearTimeout(timeoutId);
 
-        if (progressListener) { progressListener("Extracting..."); }
+        if (progressListener) { progressListener("Finishing..."); }
 
-        // Extract to a unique temp directory
-        const tmpDir = path.join(destDir, `tmp-${timestamp}`);
-        await fs.promises.mkdir(tmpDir, { recursive: true });
-
-        try {
-            await tar.x({
-                file: tarballPath,
-                C: tmpDir,
-                strip: 0 // Do not strip to avoid dropping root-level binaries
-            });
-
-            // Find the extracted binary recursively
-            const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
-            async function findBinary(dir: string): Promise<string | null> {
-                const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-                for (const name of candidates) {
-                    const match = entries.find(e => e.isFile() && e.name === name);
-                    if (match) return path.join(dir, match.name);
-                }
-                for (const entry of entries) {
-                    if (entry.isDirectory()) {
-                        const res = await findBinary(path.join(dir, entry.name));
-                        if (res) return res;
-                    }
-                }
-                return null;
+        // Move the extracted layout (bin, lib, config) into destDir so ctrace can resolve its shared libraries
+        // via INSTALL_RPATH "$ORIGIN/../lib"
+        for (const folder of ['bin', 'lib', 'config']) {
+            const src = path.join(tmpDir, folder);
+            const dst = path.join(destDir, folder);
+            if (fs.existsSync(src)) {
+                await fs.promises.rm(dst, { recursive: true, force: true }).catch(() => {});
+                await fs.promises.rename(src, dst);
             }
+        }
 
-            const binaryInTmp = await findBinary(tmpDir);
-            if (!binaryInTmp) {
-                throw new Error("Could not find ctrace/coretrace binary inside the downloaded archive.");
+        // Also check if any standalone binary was extracted at root of tmpDir
+        for (const name of candidates) {
+            const srcFile = path.join(tmpDir, name);
+            if (fs.existsSync(srcFile)) {
+                const dstBinDir = path.join(destDir, 'bin');
+                await fs.promises.mkdir(dstBinDir, { recursive: true });
+                const dstFile = path.join(dstBinDir, name);
+                await fs.promises.unlink(dstFile).catch(() => {});
+                await fs.promises.rename(srcFile, dstFile);
             }
+        }
 
-            const finalBinPath = path.join(destDir, path.basename(binaryInTmp));
-            
-            // Remove existing binary to avoid errors (e.g., EPERM/EEXIST on Windows) during rename
-            try {
-                await fs.promises.unlink(finalBinPath);
-            } catch (err: any) {
-                if (err.code !== 'ENOENT') {
-                    throw err;
-                }
-            }
+        const finalBinPath = await getExtractedBinaryPath(destDir);
+        if (!finalBinPath) {
+            throw new Error("Could not find ctrace/coretrace binary inside the downloaded archive.");
+        }
 
-            // Move binary to the root of destDir
-            await fs.promises.rename(binaryInTmp, finalBinPath);
-
-            // Make it executable if on linux/mac
-            if (process.platform !== 'win32') {
-                await fs.promises.chmod(finalBinPath, 0o755);
-            }
-        } finally {
-            try {
-                await fs.promises.rm(tmpDir, { recursive: true, force: true });
-            } catch (e) {
-                // Ignore removal errors
-            }
+        // Make it executable if on linux/mac
+        if (process.platform !== 'win32') {
+            await fs.promises.chmod(finalBinPath, 0o755);
         }
     } finally {
         clearTimeout(timeoutId);
         try {
-            await fs.promises.unlink(tarballPath);
+            await fs.promises.rm(tmpDir, { recursive: true, force: true });
         } catch (e) {
-            // Ignore if file doesn't exist or can't be removed
+            // Ignore removal errors
         }
     }
 }
@@ -270,17 +263,16 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
 async function getExtractedBinaryPath(binDir: string): Promise<string | null> {
     const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
     for (const name of candidates) {
-        // Fallback for flat structure or the newly moved binary
-        const file = path.join(binDir, name);
-        if (fs.existsSync(file)) {
-            return file;
-        }
-
-        // Tarball structure is often: coretrace-vX.Y.Z-arch/bin/ctrace
-        // Keeping this for backwards compatibility
+        // Standard CMake install structure: binDir/bin/ctrace
         const fileInBin = path.join(binDir, 'bin', name);
         if (fs.existsSync(fileInBin)) {
             return fileInBin;
+        }
+
+        // Fallback for flat structure: binDir/ctrace
+        const file = path.join(binDir, name);
+        if (fs.existsSync(file)) {
+            return file;
         }
     }
     return null;

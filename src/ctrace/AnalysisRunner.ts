@@ -1,7 +1,5 @@
 import * as cp from 'child_process';
-import * as fs from 'fs';
 import type { CancellationToken } from 'vscode';
-import type { BuiltCommand } from './CommandBuilder';
 
 export interface RunResult {
     stdout: string;
@@ -11,27 +9,15 @@ export interface RunResult {
     killed?: boolean;
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
-/** Maximum output size per stream (stdout or stderr) accepted from ctrace.
- *  child_process.exec/execFile applies maxBuffer independently to each stream,
- *  so the process can produce up to 2× this value in total (10 MB stdout +
- *  10 MB stderr) before either stream triggers a "maxBuffer exceeded" error. */
-const MAX_OUTPUT_BYTES   = 10 * 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds per file
 
 /**
- * Executes a built command and returns stdout/stderr.
- * - When `built.file` + `built.args` are set, uses `cp.execFile` (no shell,
- *   safest option — preferred for Linux / macOS).
- * - Falls back to `cp.exec` with a shell command string for WSL paths on
- *   Windows (args are already validated and shell-escaped by CommandBuilder).
- *
- * The process is killed automatically after `timeoutMs` milliseconds, or
- * immediately when the optional `token` is cancelled by the user.
- *
+ * Executes a shell command and returns stdout/stderr.
+ * cwd should be the extension folder so ctrace can find its bundled tools.
  * Never rejects — errors are captured in the RunResult.
  */
 export function runCommand(
-    built: BuiltCommand,
+    command: string,
     cwd: string,
     token?: CancellationToken,
     timeoutMs: number = DEFAULT_TIMEOUT_MS
@@ -56,63 +42,46 @@ export function runCommand(
         const kill = (reason: string) => {
             killRequested = true;
             if (child && !child.killed) {
-                // Use SIGKILL so the entire WSL sh -c "..." process tree is
-                // terminated immediately. SIGTERM can leave child processes
-                // (tscancode, ikos …) orphaned when the shell ignores it.
-                child.kill('SIGKILL');
+                try {
+                    child.kill();
+                } catch {
+                    // Ignore kill errors if already terminated
+                }
             }
             finish({ stdout: '', stderr: reason, exitCode: null, killed: true });
         };
 
-        // Hard timeout guard
-        const timer = setTimeout(() => kill(`Ctrace timed out after ${timeoutMs / 1000}s.`), timeoutMs);
+        // Timeout guard to prevent infinite hanging
+        const timer = setTimeout(() => {
+            kill('Ctrace timed out after ' + (timeoutMs / 1000) + 's.');
+        }, timeoutMs);
 
-        // VS Code CancellationToken support
-        const cancelListener = token?.onCancellationRequested(() => kill('Analysis cancelled by user.'));
+        // VS Code cancellation token listener
+        const cancelListener = token?.onCancellationRequested(() => {
+            kill('Analysis cancelled by user.');
+        });
 
-        // If already cancelled before we even spawned, bail immediately.
-        // Use finish() (not resolve() directly) so that `settled` is set to true,
-        // keeping state consistent with every other exit path.
         if (token?.isCancellationRequested) {
             finish({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
             return;
         }
 
-        const done = (err: cp.ExecException | cp.ExecFileException | null, stdout: string, stderr: string) => {
-            // `code` is a number on normal exits but a signal name string on
-            // signal-kills (e.g. "SIGKILL").  Only forward it as an exit code
-            // when it is actually numeric to avoid NaN propagating downstream.
-            const rawCode = (err as cp.ExecFileException)?.code;
-            const exitCode = (typeof rawCode === 'number') ? rawCode : null;
-            finish({
-                stdout: stdout ?? '',
-                stderr: stderr ?? '',
-                exitCode,
-            });
-        };
-
-        if (built.file && built.args) {
-            // Make the binary executable first (Linux / macOS), then run it.
-            // We use execFile so no shell is ever spawned — the args cannot
-            // be interpreted as shell commands regardless of their content.
-            fs.chmod(built.file, 0o755, (chmodErr) => {
-                if (chmodErr) {
-                    finish({ stdout: '', stderr: String(chmodErr), exitCode: 1 });
-                    return;
+        try {
+            child = cp.exec(
+                command,
+                { cwd, maxBuffer: 10 * 1024 * 1024 },
+                (err, stdout, stderr) => {
+                    finish({
+                        stdout: stdout ?? '',
+                        stderr: stderr ?? '',
+                        exitCode: err?.code ?? null,
+                    });
                 }
-                if (settled) { return; } // cancelled during chmod
-                child = cp.execFile(built.file!, built.args!, { cwd, maxBuffer: MAX_OUTPUT_BYTES }, done);
-                // Guard: kill was requested while chmod was running (async gap).
-                // `kill()` already set `killRequested` but couldn't reach `child`
-                // since it was undefined at that point. Kill it now.
-                if (killRequested && !child.killed) {
-                    child.kill('SIGKILL');
-                }
-            });
-        } else if (built.command) {
-            child = cp.exec(built.command, { cwd, maxBuffer: MAX_OUTPUT_BYTES }, done);
-        } else {
-            finish({ stdout: '', stderr: 'No command to run.', exitCode: 1 });
+            );
+        } catch (e) {
+            clearTimeout(timer);
+            cancelListener?.dispose();
+            resolve({ stdout: '', stderr: 'Failed to execute command: ' + String(e), exitCode: 1 });
         }
     });
 }
