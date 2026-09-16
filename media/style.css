@@ -167,6 +167,102 @@ body {
     border-color: var(--coretrace-border);
 }
 
+/* ── Scope selector (segmented control) ────────────────────────────────────── */
+.scope-selector {
+    display: flex;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.3));
+    border-radius: 8px;
+    padding: 3px;
+    gap: 3px;
+}
+
+.scope-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+    font-size: 0.78em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.scope-option.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground, #fff);
+}
+
+.scope-option:not(.active):hover {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12));
+    color: var(--vscode-foreground);
+}
+
+.scope-option svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+/* ── Workspace pill ────────────────────────────────────────────────────────── */
+.ws-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-button-background);
+    border-radius: 6px;
+    font-size: 0.78em;
+    color: var(--vscode-foreground);
+    overflow: hidden;
+}
+
+.ws-pill svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    color: var(--vscode-textLink-foreground);
+}
+
+/* ── Workspace progress bar ────────────────────────────────────────────────── */
+.ws-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ws-progress-bar-track {
+    width: 100%;
+    height: 4px;
+    background: var(--vscode-input-border, rgba(128,128,128,0.25));
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.ws-progress-bar {
+    height: 4px;
+    background: var(--vscode-button-background);
+    border-radius: 999px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.ws-progress-text {
+    font-size: 0.72em;
+    color: var(--vscode-descriptionForeground);
+    text-align: center;
+}
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+
 /* ── File pill ─────────────────────────────────────────────────────────────── */
 .file-pill {
     display: flex;
@@ -943,6 +1039,38 @@ select:focus-visible {
     padding: 24px 0 8px;
     color: var(--vscode-descriptionForeground);
     font-size: 0.8em;
+}
+
+/* ── color-mix() progressive enhancement ───────────────────────────────────── */
+/* color-mix() requires Chromium ≥ 111 (VS Code ≥ 1.90).  The rules above       */
+/* provide static rgba() fallbacks; these declarations override them when the    */
+/* engine supports the function, restoring theme-adaptive tinted colours.        */
+@supports (color: color-mix(in srgb, red 50%, transparent)) {
+    .header-icon {
+        background: linear-gradient(
+            135deg,
+            color-mix(in srgb, var(--vscode-button-background) 10%, transparent),
+            color-mix(in srgb, var(--vscode-charts-purple) 10%, transparent)
+        );
+        border-color: color-mix(in srgb, var(--vscode-button-background) 20%, transparent);
+    }
+
+    .vuln-item:hover {
+        border-color: color-mix(in srgb, var(--vscode-button-background) 40%, transparent);
+    }
+
+    .sev-error {
+        background: color-mix(in srgb, var(--vscode-charts-red)    13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-red)    27%, transparent);
+    }
+    .sev-warning {
+        background: color-mix(in srgb, var(--vscode-charts-orange) 13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-orange) 27%, transparent);
+    }
+    .sev-note {
+        background: color-mix(in srgb, var(--vscode-charts-blue)   13%, transparent);
+        border-color: color-mix(in srgb, var(--vscode-charts-blue)   27%, transparent);
+    }
 }
 
 .empty-state svg {

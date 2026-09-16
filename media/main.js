@@ -413,6 +413,15 @@
     window.addEventListener('message', event => {
         const msg = event.data;
         switch (msg.type) {
+            case 'analysis-downloading':
+                setDownloading(msg.progress);
+                break;
+            case 'analysis-download-complete':
+                setDownloadComplete();
+                break;
+            case 'analysis-start':
+                setRunning(true);
+                break;
             case 'analysis-result':
                 handleAnalysisResult(msg.data);
                 break;
@@ -449,7 +458,31 @@
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────────
+    function setDownloading(progressMsg) {
+        isDownloading = true;
+        if (!runBtn) { return; }
+        runBtn.disabled = true;
+        runBtn.classList.add('running'); // Force spinner instead of play icon
+        if (runLabel) { runLabel.textContent = `Downloading (${progressMsg})`; }
+        
+        if (scopeFile) scopeFile.style.opacity = '0.5';
+        if (scopeFile) scopeFile.style.cursor = 'not-allowed';
+        if (scopeWs) scopeWs.style.opacity = '0.5';
+        if (scopeWs) scopeWs.style.cursor = 'not-allowed';
+    }
+
+    function setDownloadComplete() {
+        isDownloading = false;
+        if (!isRunning) {
+            setRunning(false);
+        }
+    }
+
     function setRunning(running) {
+        isRunning = running;
+        if (running) {
+            isDownloading = false;
+        }
         if (!runBtn) { return; }
         runBtn.disabled = running;
         runBtn.classList.toggle('running', running);
@@ -460,6 +493,22 @@
         }
         // Icons are toggled purely by CSS (.running .icon-idle / .icon-running)
         // No lucide.createIcons() call needed — avoids invalidating other SVG refs.
+        
+        if (scopeFile) scopeFile.style.opacity = running ? '0.5' : '1';
+        if (scopeFile) scopeFile.style.cursor = running ? 'not-allowed' : 'pointer';
+        if (scopeWs) scopeWs.style.opacity = running ? '0.5' : '1';
+        if (scopeWs) scopeWs.style.cursor = running ? 'not-allowed' : 'pointer';
+    }
+
+    function setWsProgress(total, changed, cached, done) {
+        if (!wsProgressBar || !wsProgressText) { return; }
+        const pct = changed > 0 ? Math.round((done / changed) * 100) : 0;
+        wsProgressBar.style.width = pct + '%';
+        if (cached > 0) {
+            wsProgressText.textContent = `${done}/${changed} analysed · ${cached} cached`;
+        } else {
+            wsProgressText.textContent = `${done}/${changed} files`;
+        }
     }
 
     function handleAnalysisResult(sarif) {
@@ -587,7 +636,8 @@
         `;
 
         li.addEventListener('click', () => {
-            vscode.postMessage({ type: 'open-file', path: filePath, line: Math.max(0, line - 1) });
+            const safeLine = (typeof line === 'number' && isFinite(line)) ? Math.max(0, line - 1) : 0;
+            vscode.postMessage({ type: 'open-file', path: filePath, line: safeLine });
         });
 
         vulnList.appendChild(li);
@@ -605,3 +655,4 @@
     }
 
 }());
+

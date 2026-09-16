@@ -34,7 +34,13 @@ export function runCommand(
             resolve(result);
         };
 
+        // Set when a kill is requested (timeout or cancellation). If the child
+        // process is spawned AFTER this flag goes true (e.g. during an async
+        // chmod call) it must be killed immediately upon creation.
+        let killRequested = false;
+
         const kill = (reason: string) => {
+            killRequested = true;
             if (child && !child.killed) {
                 try {
                     child.kill();
@@ -56,8 +62,7 @@ export function runCommand(
         });
 
         if (token?.isCancellationRequested) {
-            clearTimeout(timer);
-            resolve({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
+            finish({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
             return;
         }
 

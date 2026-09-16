@@ -20,6 +20,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     const sidebarProvider = new SidebarProvider(context.extensionUri);
+    // Register the provider itself as a Disposable so its view-scoped
+    // subscriptions are guaranteed to be released on extension deactivation,
+    // even if `onDidDispose` is never fired by VS Code.
+    context.subscriptions.push(sidebarProvider);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('ctrace-audit-view', sidebarProvider)
     );
@@ -36,6 +40,35 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(diagnosticCollection);
 
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
+    // Guard against concurrent invocations (e.g. a second postMessage arriving
+    // while the first analysis is still running, or a keyboard shortcut being
+    // triggered while the sidebar button is already spinning).
+    let isRunning = false;
+
+    // ── Shared helpers ───────────────────────────────────────────────────────
+    async function locateOrError(): Promise<string | null> {
+        let p: string | null = null;
+        try {
+            p = await ensureBinary(context, output);
+        } catch (e: any) {
+            output.appendLine(`ensureBinary threw an error: ${e.message}`);
+        }
+        
+        if (!p) {
+            const extPath = context.extensionUri.fsPath;
+            const globalStorage = context.globalStorageUri.fsPath;
+            vscode.window.showErrorMessage(
+                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
+            );
+        }
+        return p;
+    }
+
+    // ── Command: ctrace.runWorkspaceAnalysis ─────────────────────────────────
+    // Scans the workspace for C/C++ files, hands compile_commands.json to
+    // ctrace when available, and runs a file-by-file analysis otherwise.
+    // Only files whose content changed since the last run are re-analysed;
+    // the rest are served from the in-process hash cache.
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
             const uiState: CtraceUIState = arg?.uiState ?? {};
@@ -245,7 +278,7 @@ export function activate(context: vscode.ExtensionContext) {
                         const merged = mergeSarifDocs(allSarif);
                         const total = countResults(merged);
 
-                        sidebarProvider._view?.webview.postMessage({
+                        sidebarProvider.postMessage({
                             type: 'analysis-result',
                             data: merged,
                         });
@@ -351,12 +384,13 @@ function mergeSarifDocs(sarifList: any[]): any {
     return merged;
 }
 
-function tryDelete(filePath: string): void {
-    try {
-        if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); }
-    } catch (e) {
-        console.warn('[ctrace] Could not delete file:', filePath, e);
-    }
+function tryDelete(filePath: string): Promise<void> {
+    return fs.promises.unlink(filePath).catch((e: NodeJS.ErrnoException) => {
+        // ENOENT is expected when the file was never created — suppress it.
+        if (e.code !== 'ENOENT') {
+            console.warn('[ctrace] Could not delete file:', filePath, e.message);
+        }
+    });
 }
 
 const CRASH_SIGNATURES = [

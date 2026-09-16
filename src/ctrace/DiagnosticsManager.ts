@@ -15,7 +15,7 @@ import * as path from 'path';
  *                    before the loop instead.
  */
 export function updateDiagnostics(
-    sarifData: any,
+    sarifData: SarifLog,
     collection: vscode.DiagnosticCollection,
     analysedFilePath: string,
     clearFirst = true
@@ -59,27 +59,48 @@ export function updateDiagnostics(
         const endLine   = Math.max(startLine, ((region.endLine   || region.startLine   || 1) - 1));
         const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
 
-        const range      = new vscode.Range(startLine, startCol, endLine, endCol);
-        const message    = result.message?.text ?? 'Unknown issue';
-        const severity   = sarifLevelToVsCode(result.level);
-        const diagnostic = new vscode.Diagnostic(range, message, severity);
-        diagnostic.source = 'Ctrace';
-        diagnostic.code   = result.ruleId;
+            const startLine = Math.max(0, (region.startLine ?? 1) - 1);
+            const startCol  = Math.max(0, (region.startColumn ?? 1) - 1);
+            const endLine   = Math.max(startLine,   ((region.endLine   || region.startLine   || 1) - 1));
+            const endCol    = Math.max(startCol + 1, ((region.endColumn || region.startColumn || 1) - 1));
 
         if (!byFile.has(targetFile)) { byFile.set(targetFile, []); }
         byFile.get(targetFile)!.push(diagnostic);
     }
+}
+
+/**
+ * Converts a WSL mount path (produced by ctrace running inside WSL on Windows)
+ * to a Windows-style absolute path so `vscode.Uri.file()` resolves it correctly.
+ *
+ * Handles both POSIX-separator form   /mnt/c/Users/...
+ * and backslash-escaped form          \\mnt\\c\\Users\\...
+ *
+ * On non-Windows hosts the path is returned unchanged because `/mnt/...` is a
+ * legitimate native mount point there.
+ */
+function normaliseMountPath(p: string): string {
+    if (process.platform !== 'win32') { return p; }
+    // Normalise backslash variants to forward slashes first.
+    const forward = p.replace(/\\/g, '/');
+    // /mnt/<drive>/rest  →  <DRIVE>:/rest
+    return forward.replace(
+        /^\/{1,2}mnt\/([a-zA-Z])\//,
+        (_, drive: string) => `${drive.toUpperCase()}:/`
+    );
+}
 
     byFile.forEach((diagnostics, fp) => {
         collection.set(vscode.Uri.file(fp), diagnostics);
     });
 }
 
-function sarifLevelToVsCode(level: string | undefined): vscode.DiagnosticSeverity {
-    switch ((level ?? '').toLowerCase()) {
+function sarifLevelToVsCode(level: 'error' | 'warning' | 'note' | 'none' | undefined): vscode.DiagnosticSeverity {
+    switch (level) {
         case 'error':   return vscode.DiagnosticSeverity.Error;
         case 'warning': return vscode.DiagnosticSeverity.Warning;
         case 'note':    return vscode.DiagnosticSeverity.Information;
         default:        return vscode.DiagnosticSeverity.Warning;
     }
 }
+
