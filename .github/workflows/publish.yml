@@ -25,23 +25,10 @@ jobs:
       - name: Run Tests
         run: xvfb-run -a npm test
 
-  publish-target:
-    name: Publish for ${{ matrix.target }}
+  publish:
+    name: Publish Extension
     needs: test
     runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 1
-      matrix:
-        include:
-          - target: linux-x64
-            asset_os: linux
-            asset_arch: amd64
-          - target: linux-arm64
-            asset_os: linux
-            asset_arch: arm64
-          - target: win32-x64
-            asset_os: linux
-            asset_arch: amd64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -58,28 +45,5 @@ jobs:
       - name: Compile Extension
         run: npm run compile
 
-      - name: Download and bundle CoreTrace release
-        run: |
-          LATEST_RELEASE=$(curl -s https://api.github.com/repos/CoreTrace/coretrace/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          ASSET_NAME="coretrace-${LATEST_RELEASE}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz"
-          URL="https://github.com/CoreTrace/coretrace/releases/download/${LATEST_RELEASE}/${ASSET_NAME}"
-          echo "Fetching CoreTrace release ${URL}..."
-          curl -sL "${URL}" | tar -xz --strip-components=1
-          chmod +x bin/ctrace || true
-
-      - name: Package Target VSIX
-        run: npx @vscode/vsce package --target ${{ matrix.target }} --pre-release -o extension-${{ matrix.target }}.vsix
-
-      - name: Publish Target VSIX to Marketplace
-        run: |
-          for attempt in 1 2 3; do
-            echo "Publish attempt $attempt for ${{ matrix.target }}..."
-            if npx @vscode/vsce publish --packagePath extension-${{ matrix.target }}.vsix --skip-duplicate --pat ${{ secrets.VSCE_PAT }}; then
-              echo "Publish succeeded for ${{ matrix.target }}!"
-              exit 0
-            fi
-            echo "Publish attempt $attempt failed. Waiting 20 seconds before retry..."
-            sleep 20
-          done
-          echo "All publish attempts failed for ${{ matrix.target }}."
-          exit 1
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --pre-release --pat ${{ secrets.VSCE_PAT }}

@@ -1,4 +1,4 @@
-﻿.vscode/**
+.vscode/**
 .vscode-test/**
 out/test/**
 src/**
@@ -15,3 +15,10 @@ scripts/**
 ccoretrace-sarif-tscancode.json
 ctrace-report.txt
 process.log
+ctrace
+ctrace.exe
+bin/**
+lib/**
+config/**
+*.vsix
+
