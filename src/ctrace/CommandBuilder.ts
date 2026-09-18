@@ -115,12 +115,20 @@ function parseWslUNC(p: string): { distro: string; internalPath: string } | null
 }
 
 let cachedWslAvailable: { result: boolean; timestamp: number } | null = null;
+let mockWslAvailable: boolean | null = null;
+
+export function setMockWslAvailableForTesting(mock: boolean | null): void {
+    mockWslAvailable = mock;
+}
 
 /**
  * Checks whether Windows Subsystem for Linux (WSL) is installed and has at least
  * one Linux distribution ready to execute commands.
  */
 export function isWslAvailable(): boolean {
+    if (mockWslAvailable !== null) {
+        return mockWslAvailable;
+    }
     if (process.platform !== 'win32') {
         return false;
     }

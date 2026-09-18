@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import { checkDependencies, getInstallationScript } from '../ctrace/DependencyInstaller';
-import { buildCommand } from '../ctrace/CommandBuilder';
+import { buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
 
 suite('DependencyInstaller Test Suite', () => {
     test('getInstallationScript generates all required tool steps', () => {
@@ -26,7 +26,22 @@ suite('DependencyInstaller Test Suite', () => {
         assert.strictEqual(typeof status.details.tscancode, 'boolean');
     });
 
+    test('checkDependencies reports missing WSL when WSL is unavailable on Windows', async () => {
+        if (process.platform !== 'win32') {
+            return;
+        }
+        setMockWslAvailableForTesting(false);
+        try {
+            const status = await checkDependencies();
+            assert.strictEqual(status.allInstalled, false);
+            assert.ok(status.missing.includes('wsl'));
+        } finally {
+            setMockWslAvailableForTesting(null);
+        }
+    });
+
     test('buildCommand includes tools directory and CORETRACE environment variables', async () => {
+        setMockWslAvailableForTesting(true);
         const dummyBin = path.join(__dirname, 'dummy_bin');
         const dummySrc = path.join(__dirname, 'dummy_src.c');
         fs.writeFileSync(dummyBin, 'echo test');
@@ -39,6 +54,7 @@ suite('DependencyInstaller Test Suite', () => {
             assert.ok(built.command.includes('CORETRACE_TSCANCODE_BIN'), 'Command should export CORETRACE_TSCANCODE_BIN');
             assert.ok(built.command.includes('CORETRACE_FLAWFINDER_SCRIPT'), 'Command should export CORETRACE_FLAWFINDER_SCRIPT');
         } finally {
+            setMockWslAvailableForTesting(null);
             try { fs.unlinkSync(dummyBin); } catch {}
             try { fs.unlinkSync(dummySrc); } catch {}
         }

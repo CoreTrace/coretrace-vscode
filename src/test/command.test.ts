@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseAndValidateParams, isWslAvailable, buildCommand } from '../ctrace/CommandBuilder';
+import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -47,7 +47,23 @@ suite('CommandBuilder Test Suite', () => {
         assert.strictEqual(typeof result, 'boolean');
     });
 
+    test('buildCommand rejects with WSL requirement error on Windows when WSL is unavailable', async () => {
+        if (process.platform !== 'win32') {
+            return;
+        }
+        setMockWslAvailableForTesting(false);
+        try {
+            await assert.rejects(
+                () => buildCommand('dummy_bin', 'dummy_src.c', ''),
+                /Windows Subsystem for Linux \(WSL\) is required/
+            );
+        } finally {
+            setMockWslAvailableForTesting(null);
+        }
+    });
+
     test('buildCommand does not create temporary copies of source files', async () => {
+        setMockWslAvailableForTesting(true);
         const dummyBin = path.join(__dirname, 'dummy_bin');
         const dummySrc = path.join(__dirname, 'dummy_src.c');
         fs.writeFileSync(dummyBin, 'echo test');
@@ -60,6 +76,7 @@ suite('CommandBuilder Test Suite', () => {
             }
             assert.ok(!built.command.includes('ctrace-input-'), 'Command references ctrace-input temp file');
         } finally {
+            setMockWslAvailableForTesting(null);
             if (fs.existsSync(dummyBin)) { fs.unlinkSync(dummyBin); }
             if (fs.existsSync(dummySrc)) { fs.unlinkSync(dummySrc); }
         }
