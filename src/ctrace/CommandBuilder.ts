@@ -47,14 +47,15 @@ function shellEscapeArg(arg: string): string {
  * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command fails.
  */
 function toWslPath(winPath: string, distroName: string | null = null): string {
+    const normalized = winPath.replace(/\\/g, '/');
     try {
         const args = [
             ...(distroName ? ['-d', distroName] : []),
-            'wslpath', '-u', winPath,
+            'wslpath', '-u', normalized,
         ];
         return cp.execFileSync('wsl', args, { timeout: 5000 }).toString().trim();
     } catch {
-        return winPath.replace(/\\/g, '/').replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+        return normalized.replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
     }
 }
 
@@ -283,19 +284,16 @@ async function buildFallbackCommand(
     tempFiles: string[],
     compileCommands: boolean
 ): Promise<BuiltCommand> {
-    const ext = path.extname(inputFilePath) || '.c';
     const stamp = `${Date.now()}-${process.pid}`;
 
     const tempBin   = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
-    const tempInput = path.join(os.tmpdir(), `ctrace-input-${stamp}${ext}`);
     const lBin      = `/tmp/ctrace-${stamp}`;
 
     await fs.promises.copyFile(ctracePath, tempBin);
-    await fs.promises.copyFile(inputFilePath, tempInput);
-    tempFiles.push(tempBin, tempInput);
+    tempFiles.push(tempBin);
 
     const wBin = toWslPath(tempBin);
-    const wInput = toWslPath(tempInput);
+    const wInput = toWslPath(inputFilePath);
 
     const validatedParamsTokens = parseAndValidateParams(params).map(token => {
         const eqIndex = token.indexOf('=');

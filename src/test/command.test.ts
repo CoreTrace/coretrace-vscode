@@ -1,5 +1,7 @@
 import * as assert from 'assert';
-import { parseAndValidateParams, isWslAvailable } from '../ctrace/CommandBuilder';
+import * as fs from 'fs';
+import * as path from 'path';
+import { parseAndValidateParams, isWslAvailable, buildCommand } from '../ctrace/CommandBuilder';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -43,6 +45,24 @@ suite('CommandBuilder Test Suite', () => {
     test('isWslAvailable returns a boolean without throwing', () => {
         const result = isWslAvailable();
         assert.strictEqual(typeof result, 'boolean');
+    });
+
+    test('buildCommand does not create temporary copies of source files', async () => {
+        const dummyBin = path.join(__dirname, 'dummy_bin');
+        const dummySrc = path.join(__dirname, 'dummy_src.c');
+        fs.writeFileSync(dummyBin, 'echo test');
+        fs.writeFileSync(dummySrc, 'int main() { return 0; }');
+        try {
+            const built = await buildCommand(dummyBin, dummySrc, '--report-file=rep.json');
+            for (const tf of built.tempFiles) {
+                assert.ok(!tf.includes('dummy_src'), `Input file was copied to temp: ${tf}`);
+                assert.ok(!tf.includes('ctrace-input-'), `ctrace-input temp file was created: ${tf}`);
+            }
+            assert.ok(!built.command.includes('ctrace-input-'), 'Command references ctrace-input temp file');
+        } finally {
+            if (fs.existsSync(dummyBin)) { fs.unlinkSync(dummyBin); }
+            if (fs.existsSync(dummySrc)) { fs.unlinkSync(dummySrc); }
+        }
     });
 });
 

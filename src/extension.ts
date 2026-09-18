@@ -12,7 +12,7 @@ import { buildCtraceArgs, createReportPath, createConfigPath, generateConfigFile
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
-import { clearCache } from './ctrace/WorkspaceScanner';
+import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -170,6 +170,21 @@ export function activate(context: vscode.ExtensionContext) {
                 effectiveUiState = { ...uiState, scanMode, autoEntryPoints: false };
             }
 
+            if (!effectiveUiState.compileCommandsPath) {
+                try {
+                    const scanRes = await runWorkspaceScan();
+                    if (scanRes.compileCommandsPath) {
+                        effectiveUiState = {
+                            ...effectiveUiState,
+                            compileCommandsPath: scanRes.compileCommandsPath,
+                        };
+                        output.appendLine(`[ctrace] Auto-detected compilation database: ${scanRes.compileCommandsPath}`);
+                    }
+                } catch (e) {
+                    console.warn('[ctrace] Could not auto-detect compilation database:', e);
+                }
+            }
+
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);
 
@@ -202,6 +217,7 @@ export function activate(context: vscode.ExtensionContext) {
                     const configPath = createConfigPath(extensionPath);
                     const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot);
 
+                    let hadToolExecutionWarning = false;
                     try {
                         for (let i = 0; i < filesToAnalyze.length; i++) {
                             if (token.isCancellationRequested) {
@@ -257,6 +273,12 @@ export function activate(context: vscode.ExtensionContext) {
                             if (stdout) { output.appendLine(stdout); }
                             if (stderr) { output.appendLine('[stderr] ' + stderr); }
                             output.appendLine(`[exit ${exitCode ?? 0}]`);
+
+                            const combined = (stdout || '') + (stderr || '');
+                            if (/can't open file|No such file or directory|\/opt\/homebrew\/bin\/cppcheck/i.test(combined)) {
+                                hadToolExecutionWarning = true;
+                                output.appendLine('[ctrace warning] Note: one or more static analysis tools (e.g. cppcheck/flawfinder/ikos/tscancode) could not be executed by ctrace.');
+                            }
 
                             tempFiles.forEach(tryDelete);
 
@@ -317,11 +339,19 @@ export function activate(context: vscode.ExtensionContext) {
                             ? ` across ${filesToAnalyze.length} files`
                             : '';
 
-                        vscode.window.showInformationMessage(
-                            total > 0
-                                ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
-                                : `Analysis complete — no issues found${filesSuffix}.`
-                        );
+                        if (total > 0) {
+                            vscode.window.showInformationMessage(
+                                `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
+                            );
+                        } else if (hadToolExecutionWarning) {
+                            vscode.window.showWarningMessage(
+                                `Analysis complete — no issues found by active tools${filesSuffix}. (Note: some secondary analyzers were unavailable; see Ctrace Output channel).`
+                            );
+                        } else {
+                            vscode.window.showInformationMessage(
+                                `Analysis complete — no issues found${filesSuffix}.`
+                            );
+                        }
                     } catch (e) {
                         console.error('[ctrace] Analysis failed unexpectedly:', e);
                         output.appendLine(`[error] ${e}`);
