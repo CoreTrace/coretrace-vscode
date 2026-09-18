@@ -30,6 +30,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     strategy:
+      max-parallel: 1
       matrix:
         include:
           - target: linux-x64
@@ -66,5 +67,19 @@ jobs:
           curl -sL "${URL}" | tar -xz --strip-components=1
           chmod +x bin/ctrace || true
 
+      - name: Package Target VSIX
+        run: npx @vscode/vsce package --target ${{ matrix.target }} --pre-release -o extension-${{ matrix.target }}.vsix
+
       - name: Publish Target VSIX to Marketplace
-        run: npx @vscode/vsce publish --target ${{ matrix.target }} --pre-release --pat ${{ secrets.VSCE_PAT }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "Publish attempt $attempt for ${{ matrix.target }}..."
+            if npx @vscode/vsce publish --packagePath extension-${{ matrix.target }}.vsix --skip-duplicate --pat ${{ secrets.VSCE_PAT }}; then
+              echo "Publish succeeded for ${{ matrix.target }}!"
+              exit 0
+            fi
+            echo "Publish attempt $attempt failed. Waiting 20 seconds before retry..."
+            sleep 20
+          done
+          echo "All publish attempts failed for ${{ matrix.target }}."
+          exit 1
