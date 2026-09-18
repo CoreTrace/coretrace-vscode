@@ -92,7 +92,10 @@ function buildNativeCommand(
     compileCommands = false
 ): BuiltCommand {
     const extraArgs = compileCommands ? ` --compile-commands "${inputFilePath}"` : '';
-    const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
+    const toolsDir = path.posix.join(os.homedir().replace(/\\/g, '/'), '.coretrace', 'tools');
+    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    const cdTools = `cd "${toolsDir}" 2>/dev/null || true; `;
+    const command = `${cdTools}${envExports}chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
     return { command, tempFiles: [] };
 }
 
@@ -236,7 +239,11 @@ function trySmartDistroExecution(
             libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
         }
 
-        return `${prefix} sh -c "${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
+        const toolsDir = '~/.coretrace/tools';
+        const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+        const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
+
+        return `${prefix} sh -c "${cdTools}${envExports}${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
     } catch {
         return null;
     }
@@ -312,6 +319,10 @@ async function buildFallbackCommand(
     const libDir = getLibDirForBinary(ctracePath);
     const libEnv = libDir ? `export LD_LIBRARY_PATH=${shellEscapeArg(toWslPath(libDir))}:"$LD_LIBRARY_PATH" && ` : '';
 
-    const command = `wsl sh -c "${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
+    const toolsDir = '~/.coretrace/tools';
+    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
+
+    const command = `wsl sh -c "${cdTools}${envExports}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }

@@ -60,6 +60,10 @@
       {
         "command": "ctrace.clearAnalysisCache",
         "title": "Clear Analysis Cache"
+      },
+      {
+        "command": "ctrace.installDependencies",
+        "title": "CoreTrace: Install Analyzers & Dependencies"
       }
     ]
   },

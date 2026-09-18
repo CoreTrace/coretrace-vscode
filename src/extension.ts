@@ -13,6 +13,7 @@ import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
 import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
+import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -79,6 +80,35 @@ export function activate(context: vscode.ExtensionContext) {
         return p;
     }
 
+    // Background check for missing external dependencies
+    checkDependencies().then((depStatus) => {
+        if (!depStatus.allInstalled) {
+            output.appendLine(`[ctrace] Note: Some external analyzers are not configured: ${depStatus.missing.join(', ')}. Run "CoreTrace: Install Analyzers & Dependencies" to set them up.`);
+        }
+    }).catch(() => {});
+
+    // ── Command: ctrace.installDependencies ──────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.installDependencies', async () => {
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to install dependencies on Windows.');
+                promptWslInstallation();
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'CoreTrace: Installing Analyzers & Dependencies',
+                    cancellable: false,
+                },
+                async (progress) => {
+                    await installDependencies(output, progress);
+                }
+            );
+        })
+    );
+
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
@@ -112,6 +142,24 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
+            }
+
+            const requestedStaticTools: string[] = uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode'];
+            if (uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
+                const depStatus = await checkDependencies();
+                const missingRequested = requestedStaticTools.filter((t) => depStatus.missing.includes(t));
+                if (missingRequested.length > 0) {
+                    const action = await vscode.window.showWarningMessage(
+                        `CoreTrace: The following analyzer(s) are not configured: ${missingRequested.join(', ')}. Would you like to install them now?`,
+                        'Install Analyzers',
+                        'Run Anyway'
+                    );
+                    if (action === 'Install Analyzers') {
+                        sidebarProvider.postMessage({ type: 'analysis-done' });
+                        vscode.commands.executeCommand('ctrace.installDependencies');
+                        return;
+                    }
+                }
             }
 
             // ── Determine files to analyse ───────────────────────────────────
