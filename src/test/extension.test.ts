@@ -5,12 +5,12 @@ suite('Extension Activation & Integration Test Suite', function () {
     this.timeout(20000);
 
     test('Extension should be present', () => {
-        const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
+        const extension = vscode.extensions.getExtension('CoreTrace.coretrace-audit');
         assert.ok(extension, 'Extension not found. Check the publisher.name in package.json.');
     });
 
     test('Extension should activate successfully', async () => {
-        const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
+        const extension = vscode.extensions.getExtension('CoreTrace.coretrace-audit');
         assert.ok(extension, 'Extension not found. Cannot activate.');
         
         // Will throw if activation fails (e.g. fs access errors, dependency crashes)
@@ -19,7 +19,7 @@ suite('Extension Activation & Integration Test Suite', function () {
     });
 
     test('Extension registers all expected commands', async () => {
-        const extension = vscode.extensions.getExtension('CoreTrace.ctrace-audit');
+        const extension = vscode.extensions.getExtension('CoreTrace.coretrace-audit');
         assert.ok(extension, 'Extension not found. Cannot check commands.');
         await extension.activate();
         
