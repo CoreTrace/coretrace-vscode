@@ -79,7 +79,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         }
         case "execute-command": {
             // Only allow explicitly whitelisted commands to prevent arbitrary command execution
-            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
@@ -381,6 +381,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
               <label class="config-toggle"><input type="checkbox" id="timing"><span>Enable Timings</span></label>
               <label class="config-toggle"><input type="checkbox" id="demangle"><span>Demangle C++ Names</span></label>
               <label class="config-toggle"><input type="checkbox" id="dump-filter"><span>Dump Filter Decisions</span></label>
+            </div>
+          </details>
+
+          <!-- External Analyzers & Tools -->
+          <details class="config-section">
+            <summary><i data-lucide="wrench"></i><span>Analyzers &amp; Dependencies</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
+            <div class="config-content">
+              <small class="settings-hint" style="display: block; margin-bottom: 8px;">Install or configure external tools: cppcheck, flawfinder, ikos, tscancode.</small>
+              <button class="btn-settings-action" id="install-deps-btn" type="button" style="width: 100%; padding: 6px 12px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ffffff); border: 1px solid var(--vscode-button-border, transparent); border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                <i data-lucide="download"></i><span>Install / Repair Analyzers</span>
+              </button>
             </div>
           </details>
 

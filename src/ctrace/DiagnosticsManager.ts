@@ -41,14 +41,15 @@ export function updateDiagnostics(
         let targetFile = analysedFilePath;
         const uriStr: string | undefined = physLoc?.artifactLocation?.uri;
         if (uriStr) {
-            if (uriStr.startsWith('file://')) {
-                targetFile = vscode.Uri.parse(uriStr).fsPath;
-            } else if (workspaceRoot && fs.existsSync(path.resolve(workspaceRoot, uriStr))) {
-                targetFile = path.resolve(workspaceRoot, uriStr);
-            } else if (fs.existsSync(uriStr)) {
-                targetFile = uriStr;
-            } else if (fs.existsSync(path.resolve(fileDir, uriStr))) {
-                targetFile = path.resolve(fileDir, uriStr);
+            const normalised = normaliseMountPath(uriStr);
+            if (normalised.startsWith('file://')) {
+                targetFile = vscode.Uri.parse(normalised).fsPath;
+            } else if (fs.existsSync(normalised)) {
+                targetFile = normalised;
+            } else if (workspaceRoot && fs.existsSync(path.resolve(workspaceRoot, normalised))) {
+                targetFile = path.resolve(workspaceRoot, normalised);
+            } else if (fs.existsSync(path.resolve(fileDir, normalised))) {
+                targetFile = path.resolve(fileDir, normalised);
             } else {
                 targetFile = analysedFilePath;
             }
@@ -86,7 +87,7 @@ export function updateDiagnostics(
  * On non-Windows hosts the path is returned unchanged because `/mnt/...` is a
  * legitimate native mount point there.
  */
-function normaliseMountPath(p: string): string {
+export function normaliseMountPath(p: string): string {
     if (process.platform !== 'win32') { return p; }
     // Normalise backslash variants to forward slashes first.
     const forward = p.replace(/\\/g, '/');

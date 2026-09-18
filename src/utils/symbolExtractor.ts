@@ -6,6 +6,9 @@ const FUNCTION_KINDS = new Set([
     vscode.SymbolKind.Constructor,
 ]);
 
+import { cleanFunctionName } from './functionCleaner';
+export { cleanFunctionName };
+
 /** Extracts function and method names from a document symbol tree. */
 export async function getFunctionSymbols(document: vscode.TextDocument): Promise<string[]> {
     const symbols = await vscode.commands.executeCommand<readonly (vscode.DocumentSymbol | vscode.SymbolInformation)[] | undefined>(
@@ -26,7 +29,10 @@ function collectFunctionNames(
 ): void {
     for (const symbol of symbols) {
         if (FUNCTION_KINDS.has(symbol.kind)) {
-            names.push(symbol.name);
+            const cleaned = cleanFunctionName(symbol.name);
+            if (cleaned) {
+                names.push(cleaned);
+            }
         }
         if ('children' in symbol && symbol.children.length > 0) {
             collectFunctionNames(symbol.children, names);

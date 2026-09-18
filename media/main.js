@@ -204,6 +204,13 @@
         });
     }
 
+    const installDepsBtn = document.getElementById('install-deps-btn');
+    if (installDepsBtn) {
+        installDepsBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'execute-command', command: 'ctrace.installDependencies' });
+        });
+    }
+
     if (browseCompileCommands) {
         browseCompileCommands.addEventListener('click', () => {
             vscode.postMessage({ type: 'pick-compile-commands' });
