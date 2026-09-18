@@ -662,6 +662,8 @@
             .replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
     // Notify the extension host that the webview is ready and query initial binary/analysis status
     try {
         vscode.postMessage({ type: 'webview-ready' });
