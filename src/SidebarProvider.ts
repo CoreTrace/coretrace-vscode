@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { isUpdatingBinary } from "./ctrace/BinaryUpdater";
 
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
@@ -32,13 +33,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-    // ── Active file tracking ───────────────────────────────────────────────
+    // ── Active file & binary status tracking ──────────────────────────────
     const postActiveFile = (editor: vscode.TextEditor | undefined) => {
       const name = editor?.document.uri.path.split('/').pop() ?? null;
       this._view?.webview.postMessage({ type: 'active-file', name });
     };
-    // Push current file immediately when the sidebar first resolves
+
+    const syncBinaryStatus = () => {
+      if (isUpdatingBinary()) {
+        this._view?.webview.postMessage({ type: 'analysis-downloading', progress: 'In progress…' });
+      } else {
+        this._view?.webview.postMessage({ type: 'analysis-download-complete' });
+      }
+    };
+
+    // Push initial state immediately when the sidebar first resolves
     postActiveFile(vscode.window.activeTextEditor);
+    syncBinaryStatus();
+
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
     this._disposables.push(activeEditorListener);
@@ -46,6 +58,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
+        case "webview-ready": {
+          syncBinaryStatus();
+          postActiveFile(vscode.window.activeTextEditor);
+          break;
+        }
         case "onInfo": {
           if (!data.value) {
             return;

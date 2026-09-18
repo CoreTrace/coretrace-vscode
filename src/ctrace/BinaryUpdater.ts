@@ -269,6 +269,12 @@ async function getExtractedBinaryPath(binDir: string): Promise<string | null> {
             return fileInBin;
         }
 
+        // Nested install structure: binDir/bin/bin/ctrace
+        const fileInNestedBin = path.join(binDir, 'bin', 'bin', name);
+        if (fs.existsSync(fileInNestedBin)) {
+            return fileInNestedBin;
+        }
+
         // Fallback for flat structure: binDir/ctrace
         const file = path.join(binDir, name);
         if (fs.existsSync(file)) {

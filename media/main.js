@@ -51,6 +51,8 @@
     let analysisProfile = 'full';
     let findings = [];
     let currentStatus = 'ready';
+    let isRunning = false;
+    let isDownloading = false;
 
     // ── Init Lucide icons ──────────────────────────────────────────────────────
     // Render static Lucide icons before wiring interactive controls.
@@ -465,10 +467,14 @@
         runBtn.classList.add('running'); // Force spinner instead of play icon
         if (runLabel) { runLabel.textContent = `Downloading (${progressMsg})`; }
         
-        if (scopeFile) scopeFile.style.opacity = '0.5';
-        if (scopeFile) scopeFile.style.cursor = 'not-allowed';
-        if (scopeWs) scopeWs.style.opacity = '0.5';
-        if (scopeWs) scopeWs.style.cursor = 'not-allowed';
+        if (scanFileBtn) {
+            scanFileBtn.style.opacity = '0.5';
+            scanFileBtn.style.cursor = 'not-allowed';
+        }
+        if (scanWorkspaceBtn) {
+            scanWorkspaceBtn.style.opacity = '0.5';
+            scanWorkspaceBtn.style.cursor = 'not-allowed';
+        }
     }
 
     function setDownloadComplete() {
@@ -494,10 +500,14 @@
         // Icons are toggled purely by CSS (.running .icon-idle / .icon-running)
         // No lucide.createIcons() call needed — avoids invalidating other SVG refs.
         
-        if (scopeFile) scopeFile.style.opacity = running ? '0.5' : '1';
-        if (scopeFile) scopeFile.style.cursor = running ? 'not-allowed' : 'pointer';
-        if (scopeWs) scopeWs.style.opacity = running ? '0.5' : '1';
-        if (scopeWs) scopeWs.style.cursor = running ? 'not-allowed' : 'pointer';
+        if (scanFileBtn) {
+            scanFileBtn.style.opacity = running ? '0.5' : '1';
+            scanFileBtn.style.cursor = running ? 'not-allowed' : 'pointer';
+        }
+        if (scanWorkspaceBtn) {
+            scanWorkspaceBtn.style.opacity = running ? '0.5' : '1';
+            scanWorkspaceBtn.style.cursor = running ? 'not-allowed' : 'pointer';
+        }
     }
 
     function setWsProgress(total, changed, cached, done) {
@@ -652,6 +662,11 @@
             .replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    // Notify the extension host that the webview is ready and query initial binary/analysis status
+    try {
+        vscode.postMessage({ type: 'webview-ready' });
+    } catch {
+        // Ignore if posting message is not permitted yet
     }
 
 }());

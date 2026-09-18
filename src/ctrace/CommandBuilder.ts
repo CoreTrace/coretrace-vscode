@@ -196,7 +196,16 @@ function trySmartDistroExecution(
         const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
         const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(finalInput)}` : '';
 
-        return `${prefix} sh -c "chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
+        const libDir = getLibDirForBinary(ctracePath);
+        let libEnv = '';
+        if (libDir) {
+            const wslLib = binWsl?.distro === detectedDistro
+                ? path.posix.join(path.posix.dirname(binWsl.internalPath), '..', 'lib')
+                : resolvePath(libDir, null);
+            libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
+        }
+
+        return `${prefix} sh -c "${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
     } catch {
         return null;
     }
@@ -220,6 +229,19 @@ function resolveDistroName(distro: string): string | null {
         return safeDistro;
     } catch {
         // fall through
+    }
+    return null;
+}
+
+function getLibDirForBinary(binaryPath: string): string | null {
+    const candidateDirs = [
+        path.resolve(path.dirname(binaryPath), '..', 'lib'),
+        path.resolve(path.dirname(binaryPath), 'lib')
+    ];
+    for (const d of candidateDirs) {
+        if (fs.existsSync(d)) {
+            return d;
+        }
     }
     return null;
 }
@@ -259,6 +281,9 @@ async function buildFallbackCommand(
     const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
     const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(wInput)}` : '';
 
-    const command = `wsl sh -c "cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
+    const libDir = getLibDirForBinary(ctracePath);
+    const libEnv = libDir ? `export LD_LIBRARY_PATH=${shellEscapeArg(toWslPath(libDir))}:"$LD_LIBRARY_PATH" && ` : '';
+
+    const command = `wsl sh -c "${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }
