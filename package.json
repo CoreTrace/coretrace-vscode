@@ -1,7 +1,7 @@
 {
   "name": "coretrace-audit",
-  "displayName": "Ctrace Audit",
-  "description": "Integration for Ctrace CLI Audit Tool",
+  "displayName": "CoreTrace Audit",
+  "description": "Integration for CoreTrace CLI Audit Tool",
   "version": "0.1.0",
   "publisher": "CoreTrace",
   "icon": "icon.png",
