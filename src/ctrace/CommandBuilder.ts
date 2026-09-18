@@ -110,12 +110,42 @@ function parseWslUNC(p: string): { distro: string; internalPath: string } | null
     return null;
 }
 
+let cachedWslAvailable: { result: boolean; timestamp: number } | null = null;
+
+/**
+ * Checks whether Windows Subsystem for Linux (WSL) is installed and has at least
+ * one Linux distribution ready to execute commands.
+ */
+export function isWslAvailable(): boolean {
+    if (process.platform !== 'win32') {
+        return false;
+    }
+    const now = Date.now();
+    if (cachedWslAvailable && now - cachedWslAvailable.timestamp < 5000) {
+        return cachedWslAvailable.result;
+    }
+    try {
+        const stdout = cp.execFileSync('wsl', ['-l', '-q'], { encoding: 'utf16le', timeout: 5000 });
+        const clean = stdout.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
+        const available = Boolean(clean) && !/no installed distributions|no distribution/i.test(clean);
+        cachedWslAvailable = { result: available, timestamp: now };
+        return available;
+    } catch {
+        cachedWslAvailable = { result: false, timestamp: now };
+        return false;
+    }
+}
+
 async function buildWindowsCommand(
     ctracePath: string,
     inputFilePath: string,
     params: string,
     compileCommands = false
 ): Promise<BuiltCommand> {
+    if (!isWslAvailable()) {
+        throw new Error('Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows. Please install WSL (run "wsl --install" or visit https://learn.microsoft.com/windows/wsl/install).');
+    }
+
     const tempFiles: string[] = [];
 
     const binWsl = parseWslUNC(ctracePath);

@@ -4,12 +4,12 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand } from './ctrace/CommandBuilder';
+import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand } from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics } from './ctrace/DiagnosticsManager';
 import { buildCtraceArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
-import { getFunctionSymbols } from './utils/symbolExtractor';
+import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
 import { clearCache } from './ctrace/WorkspaceScanner';
@@ -84,6 +84,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
+
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
+                promptWslInstallation();
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
@@ -318,7 +325,12 @@ export function activate(context: vscode.ExtensionContext) {
                     } catch (e) {
                         console.error('[ctrace] Analysis failed unexpectedly:', e);
                         output.appendLine(`[error] ${e}`);
-                        vscode.window.showErrorMessage(`Ctrace analysis failed: ${e}`);
+                        const errStr = String(e);
+                        if (process.platform === 'win32' && (errStr.includes('WSL') || errStr.includes('wsl'))) {
+                            promptWslInstallation();
+                        } else {
+                            vscode.window.showErrorMessage(`Ctrace analysis failed: ${e}`);
+                        }
                         sidebarProvider._view?.webview.postMessage({
                             type: 'analysis-error',
                             message: 'Analysis failed',
@@ -354,12 +366,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.auditFunction', async (uri: vscode.Uri, functionName: string) => {
+            const cleanName = cleanFunctionName(functionName);
+            if (!cleanName) {
+                vscode.window.showWarningMessage(`Could not determine a valid function name to audit from "${functionName}".`);
+                return;
+            }
             await vscode.commands.executeCommand('ctrace.runAnalysis', {
                 filePath: uri.fsPath,
                 uiState: {
                     staticEnabled: true,
                     dynamicEnabled: true,
-                    entryPoints: [functionName],
+                    entryPoints: [cleanName],
                 },
             });
         })
@@ -367,6 +384,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.showHelp', async () => {
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
+                promptWslInstallation();
+                return;
+            }
+
             const ctracePath = await locateOrError();
             if (!ctracePath) {
                 vscode.window.showErrorMessage('Ctrace binary not found in the extension folder.');
@@ -440,11 +463,32 @@ const CRASH_SIGNATURES = [
     'Assertion failed', 'stack-overflow',
 ];
 
+export async function promptWslInstallation(): Promise<void> {
+    const action = await vscode.window.showErrorMessage(
+        'Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows. Please install WSL and a Linux distribution (e.g. Ubuntu).',
+        'Install WSL Guide',
+        'Copy "wsl --install"'
+    );
+    if (action === 'Install WSL Guide') {
+        vscode.env.openExternal(vscode.Uri.parse('https://learn.microsoft.com/windows/wsl/install'));
+    } else if (action === 'Copy "wsl --install"') {
+        await vscode.env.clipboard.writeText('wsl --install');
+        vscode.window.showInformationMessage('Copied "wsl --install" to clipboard. Open PowerShell as Administrator and run it.');
+    }
+}
+
 function handleNoResults(stdout: string, stderr: string, exitCode: number | null): void {
     const combined = stdout + stderr;
     const crash = CRASH_SIGNATURES.find(sig => combined.includes(sig));
+    const isWslIssue = process.platform === 'win32' && (
+        combined.includes('Windows Subsystem for Linux') ||
+        combined.includes('wsl.exe') ||
+        combined.includes('no installed distributions')
+    );
 
-    if (crash) {
+    if (isWslIssue) {
+        promptWslInstallation();
+    } else if (crash) {
         vscode.window.showErrorMessage(
             `Ctrace crashed (${crash}). This is likely a bug in the analysis tool. See the Output Channel.`
         );
