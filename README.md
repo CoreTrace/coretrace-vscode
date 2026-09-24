@@ -1,47 +1,93 @@
 # CoreTrace VS Code Extension
 
-CoreTrace VS Code is a powerful integration of the `ctrace` analyzer framework directly into your Visual Studio Code environment. It provides seamless static and dynamic analysis for C and C++ projects, surfacing complex diagnostics exactly where you need them.
+CoreTrace VS Code brings the power of the `ctrace` security and quality analysis framework directly into Visual Studio Code. It provides seamless static and dynamic analysis for C and C++ projects, surfacing vulnerabilities, code defects, and stack diagnostics directly in your editor.
 
-## 🚀 Features
+---
 
-### 1. Unified Diagnostics Panel
-We automatically ingest, parse, and unify results from multiple analysis tools run by `ctrace` into a single VS Code interface:
-- **Standard SARIF formats** from static analyzers (CppCheck, Flawfinder, TSCancode, Ikos, etc.).
-- **Stack Analyzer alerts** detailing infinite recursions, uninitialized variables, and large local scopes.
-- **Clang/GCC Compiler warnings** intercepted locally and upgraded into standard VS Code diagnostics.
+## 🚀 Key Features
 
-Clicking on any diagnostic in the custom Sidebar or native 'Problems' view will automatically jump you to the correct file and line, gracefully handling absolute `file://` URIs and relative workspace paths.
+### 1. Unified Diagnostics & Interactive Dashboard
+CoreTrace orchestrates multiple industry-standard analyzers and unifies their output into a single, intuitive VS Code interface:
+- **Integrated Static Analyzers**: Aggregates SARIF reports from **Cppcheck**, **Flawfinder**, **Ikos**, and **TscanCode**.
+- **Dynamic & Stack Analysis**: Identifies stack overflows, infinite recursion risks, uninitialized variables, and large stack frame allocations (`ctrace_stack_analyzer`).
+- **Compiler Warnings**: Intercepts Clang/GCC compiler diagnostics and maps them into standard editor problems.
+- **Rich Dashboard**: Filter findings by severity (Errors, Warnings, Info), search by keyword, and click any item to jump directly to the source file and line.
 
-### 2. Workspace-wide Analysis
-Toggle between analyzing a single active file or scanning your **entire workspace**. The extension automatically orchestrates the analysis without you needing to do it manually.
+### 2. 🛡️ In-Editor CodeLens: "Audit Function"
+Perform targeted security checks without scanning an entire file or project:
+- A `🛡️ Audit Function` CodeLens action appears directly above function, method, and constructor definitions in your C/C++ files.
+- Clicking the lens runs an isolated analysis with entry points scoped to that specific function.
 
-### 3. Intelligent `compile_commands.json` Resolution
-To provide precise C/C++ analysis across complex codebases (with specific `#include` paths or macros), the extension automatically locates your `compile_commands.json` database.
+### 3. 📦 Automated Analyzer Dependency Installer
+`ctrace` relies on external static analysis engines to maximize vulnerability detection. CoreTrace includes a built-in automated installer:
+- **One-Click Installation**: Automatically installs, compiles, and configures `cppcheck`, `flawfinder`, `ikos`, and `tscancode` into `~/.coretrace/tools/`.
+- **Automatic Environment Configuration**: Automatically exports binary paths and configures the execution environment without requiring manual `PATH` modifications.
+- **Quick Access**: Accessible via the **"Install / Repair Analyzers"** button in the sidebar settings or via the Command Palette (`CoreTrace: Install Analyzers & Dependencies`).
+- **Missing Tools Detection**: The extension notifies you if analyzer backends are missing and offers to set them up with one click.
 
-It looks for the file in the following specific order:
-1. The root of your workspace (`/compile_commands.json`).
-2. Directly via your **CMake Tools** configuration (honoring custom `cmake.buildDirectory` settings and VS Code variable substitutions).
-3. The default build directory (`/build/compile_commands.json`).
+### 4. Seamless Windows & WSL Support
+- On **Linux** and **macOS**, `ctrace` runs natively.
+- On **Windows**, the extension automatically detects and executes through **WSL** (Windows Subsystem for Linux).
+- **In-Place Analysis**: Windows files are analyzed directly through WSL mount paths (`/mnt/...`), ensuring that relative `#include` directives and project directory trees resolve without broken includes.
+- WSL paths in diagnostics are automatically translated back to native Windows paths in VS Code.
+
+### 5. Intelligent `compile_commands.json` Discovery
+Precise C/C++ static analysis requires knowledge of compiler flags, include directories, and macro definitions. CoreTrace automatically discovers your compilation database:
+1. Workspace root (`compile_commands.json`).
+2. Build directory (`build/compile_commands.json`).
+3. Microsoft CMake Tools build directory configuration (honoring `cmake.buildDirectory` settings and VS Code variable substitutions).
 
 > **💡 Tip for CMake users:** 
-> By default, the Microsoft CMake Tools extension automatically configures this database. If you build manually via terminal, ensure your CMake configuration generates the compilation database by adding this to your `CMakeLists.txt`:
+> Generate your compilation database automatically by adding this to your `CMakeLists.txt`:
 > ```cmake
 > set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 > ```
-> Or pass the flag during generation: `cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`
+> Or pass the flag during CMake configuration:
+> ```bash
+> cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+> ```
 
-### 4. Smart Caching
-No need to wait for a full re-scan. CoreTrace caches file hashes across the entire workspace. During subsequent runs, it only re-analyzes C/C++ files whose contents have changed since your last run, massively speeding up your workflow.
+### 6. Smart Caching
+Save time on repetitive scans. CoreTrace computes file content hashes and only re-analyzes C/C++ files that have changed since your last run, speeding up iterative development.
 
-## 🛠️ Usage
+---
 
-1. Open a C/C++ project in VS Code.
-2. Click on the **CoreTrace Sidebar** (via the icon in the Activity Bar).
-3. Choose your target **Scope**:
-   - **File**: Analyze the currently active editor file.
-   - **Workspace**: Analyze every modified source file in the project.
-4. Click **Run Analysis** to execute `ctrace`. All findings will appear instantly in the panel and directly in your code editor as error/warning highlights.
+## ⚙️ Requirements & Prerequisites
 
-## ⚙️ Requirements
-- The extension automatically downloads and installs the latest `ctrace` / `coretrace` CLI binaries from GitHub Releases during its first activation. You do not need to install them manually in your PATH. It will also periodically check for and download binary updates automatically in the background.
-- *Recommended:* For accurate analysis in complex codebases, it is advised to generate a `compile_commands.json` (e.g. via `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) in your workspace root or `build` directory.
+- **VS Code**: Version `^1.82.0` or later.
+- **Operating Systems**:
+  - **Linux / macOS**: Supported natively.
+  - **Windows**: Requires **WSL** (Windows Subsystem for Linux, e.g. Ubuntu). If you do not have WSL installed, run `wsl --install` in PowerShell.
+- **CoreTrace CLI**: The extension automatically downloads and updates the latest `ctrace` binaries from GitHub Releases upon first launch.
+- **Analyzers (Optional but Recommended)**: To enable all static analysis engines (`cppcheck`, `flawfinder`, `ikos`, `tscancode`), run the built-in installer via the sidebar or command palette.
+
+---
+
+## 🛠️ Getting Started
+
+1. Open any C or C++ project in VS Code.
+2. Open the **CoreTrace Sidebar** by clicking the shield icon ($(shield)) in the Activity Bar.
+3. Configure your analysis:
+   - **Scope**: Choose **Scan File** (active file) or **Scan Workspace** (entire repository).
+   - **Engines**: Toggle **Static** (Cppcheck, Flawfinder, Ikos, TscanCode) and **Dynamic** (Stack Analyzer) engines.
+   - **Settings (⚙️)**: Optionally configure custom include paths (`-I`), compiler macros (`-D`), or specify a custom `compile_commands.json`.
+4. Click **Run Analysis**. Findings will appear in the dashboard and directly as editor problem annotations.
+
+---
+
+## ⌨️ Available Commands
+
+Access these commands from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
+
+| Command | Title | Description |
+|---|---|---|
+| `ctrace.runAnalysis` | **Run Analysis** | Runs analysis on the currently active C/C++ file. |
+| `ctrace.runWorkspaceAnalysis` | **Run Workspace Analysis** | Analyzes all modified C/C++ files in the workspace. |
+| `ctrace.installDependencies` | **CoreTrace: Install Analyzers & Dependencies** | Installs or repairs external static analyzers (`cppcheck`, `flawfinder`, `ikos`, `tscancode`). |
+| `ctrace.clearAnalysisCache` | **Clear Analysis Cache** | Clears cached analysis hashes to force a clean re-scan. |
+
+---
+
+## 📄 License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
