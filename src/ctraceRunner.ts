@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { cleanFunctionName } from './utils/symbolExtractor';
 
 export type AnalysisProfile = 'fast' | 'full';
 export type SmtBackend = 'interval' | 'z3' | 'cvc5';
@@ -66,11 +67,13 @@ export function buildCtraceArgs(
 ): string[] {
     const args: string[] = [];
 
-    const entryPoints = (uiState.entryPoints ?? [])
+    const rawEntryPoints = (uiState.entryPoints ?? [])
+        .flatMap(name => typeof name === 'string' ? name.split(',') : []);
+    const entryPoints = rawEntryPoints
+        .map(name => cleanFunctionName(name.trim()))
         .filter((name, index, names): name is string =>
-            typeof name === 'string' && cleanValue(name) !== undefined && names.indexOf(name) === index
-        )
-        .map(name => name.trim());
+            Boolean(name) && names.indexOf(name) === index
+        );
     if (entryPoints.length > 0) {
         args.push(`--entry-points=${entryPoints.join(',')}`);
     }

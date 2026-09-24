@@ -4,15 +4,16 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand } from './ctrace/CommandBuilder';
+import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand } from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics } from './ctrace/DiagnosticsManager';
 import { buildCtraceArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
-import { getFunctionSymbols } from './utils/symbolExtractor';
+import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
-import { clearCache } from './ctrace/WorkspaceScanner';
+import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
+import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -79,11 +80,47 @@ export function activate(context: vscode.ExtensionContext) {
         return p;
     }
 
+    // Background check for missing external dependencies
+    checkDependencies().then((depStatus) => {
+        if (!depStatus.allInstalled) {
+            output.appendLine(`[ctrace] Note: Some external analyzers are not configured: ${depStatus.missing.join(', ')}. Run "CoreTrace: Install Analyzers & Dependencies" to set them up.`);
+        }
+    }).catch(() => {});
+
+    // ── Command: ctrace.installDependencies ──────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.installDependencies', async () => {
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to install dependencies on Windows.');
+                promptWslInstallation();
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'CoreTrace: Installing Analyzers & Dependencies',
+                    cancellable: false,
+                },
+                async (progress) => {
+                    await installDependencies(output, progress);
+                }
+            );
+        })
+    );
+
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
             if (isRunning) {
                 vscode.window.showWarningMessage('An analysis is already in progress.');
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
+
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
+                promptWslInstallation();
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
@@ -105,6 +142,24 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
+            }
+
+            const requestedStaticTools: string[] = uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode'];
+            if (uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
+                const depStatus = await checkDependencies();
+                const missingRequested = requestedStaticTools.filter((t) => depStatus.missing.includes(t));
+                if (missingRequested.length > 0) {
+                    const action = await vscode.window.showWarningMessage(
+                        `CoreTrace: The following analyzer(s) are not configured: ${missingRequested.join(', ')}. Would you like to install them now?`,
+                        'Install Analyzers',
+                        'Run Anyway'
+                    );
+                    if (action === 'Install Analyzers') {
+                        sidebarProvider.postMessage({ type: 'analysis-done' });
+                        vscode.commands.executeCommand('ctrace.installDependencies');
+                        return;
+                    }
+                }
             }
 
             // ── Determine files to analyse ───────────────────────────────────
@@ -163,6 +218,21 @@ export function activate(context: vscode.ExtensionContext) {
                 effectiveUiState = { ...uiState, scanMode, autoEntryPoints: false };
             }
 
+            if (!effectiveUiState.compileCommandsPath) {
+                try {
+                    const scanRes = await runWorkspaceScan();
+                    if (scanRes.compileCommandsPath) {
+                        effectiveUiState = {
+                            ...effectiveUiState,
+                            compileCommandsPath: scanRes.compileCommandsPath,
+                        };
+                        output.appendLine(`[ctrace] Auto-detected compilation database: ${scanRes.compileCommandsPath}`);
+                    }
+                } catch (e) {
+                    console.warn('[ctrace] Could not auto-detect compilation database:', e);
+                }
+            }
+
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);
 
@@ -195,6 +265,7 @@ export function activate(context: vscode.ExtensionContext) {
                     const configPath = createConfigPath(extensionPath);
                     const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot);
 
+                    let hadToolExecutionWarning = false;
                     try {
                         for (let i = 0; i < filesToAnalyze.length; i++) {
                             if (token.isCancellationRequested) {
@@ -250,6 +321,12 @@ export function activate(context: vscode.ExtensionContext) {
                             if (stdout) { output.appendLine(stdout); }
                             if (stderr) { output.appendLine('[stderr] ' + stderr); }
                             output.appendLine(`[exit ${exitCode ?? 0}]`);
+
+                            const combined = (stdout || '') + (stderr || '');
+                            if (/can't open file|No such file or directory|\/opt\/homebrew\/bin\/cppcheck/i.test(combined)) {
+                                hadToolExecutionWarning = true;
+                                output.appendLine('[ctrace warning] Note: one or more static analysis tools (e.g. cppcheck/flawfinder/ikos/tscancode) could not be executed by ctrace.');
+                            }
 
                             tempFiles.forEach(tryDelete);
 
@@ -310,15 +387,28 @@ export function activate(context: vscode.ExtensionContext) {
                             ? ` across ${filesToAnalyze.length} files`
                             : '';
 
-                        vscode.window.showInformationMessage(
-                            total > 0
-                                ? `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
-                                : `Analysis complete — no issues found${filesSuffix}.`
-                        );
+                        if (total > 0) {
+                            vscode.window.showInformationMessage(
+                                `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
+                            );
+                        } else if (hadToolExecutionWarning) {
+                            vscode.window.showWarningMessage(
+                                `Analysis complete — no issues found by active tools${filesSuffix}. (Note: some secondary analyzers were unavailable; see Ctrace Output channel).`
+                            );
+                        } else {
+                            vscode.window.showInformationMessage(
+                                `Analysis complete — no issues found${filesSuffix}.`
+                            );
+                        }
                     } catch (e) {
                         console.error('[ctrace] Analysis failed unexpectedly:', e);
                         output.appendLine(`[error] ${e}`);
-                        vscode.window.showErrorMessage(`Ctrace analysis failed: ${e}`);
+                        const errStr = String(e);
+                        if (process.platform === 'win32' && (errStr.includes('WSL') || errStr.includes('wsl'))) {
+                            promptWslInstallation();
+                        } else {
+                            vscode.window.showErrorMessage(`Ctrace analysis failed: ${e}`);
+                        }
                         sidebarProvider._view?.webview.postMessage({
                             type: 'analysis-error',
                             message: 'Analysis failed',
@@ -354,12 +444,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.auditFunction', async (uri: vscode.Uri, functionName: string) => {
+            const cleanName = cleanFunctionName(functionName);
+            if (!cleanName) {
+                vscode.window.showWarningMessage(`Could not determine a valid function name to audit from "${functionName}".`);
+                return;
+            }
             await vscode.commands.executeCommand('ctrace.runAnalysis', {
                 filePath: uri.fsPath,
                 uiState: {
                     staticEnabled: true,
                     dynamicEnabled: true,
-                    entryPoints: [functionName],
+                    entryPoints: [cleanName],
                 },
             });
         })
@@ -367,6 +462,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.showHelp', async () => {
+            if (process.platform === 'win32' && !isWslAvailable()) {
+                output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
+                promptWslInstallation();
+                return;
+            }
+
             const ctracePath = await locateOrError();
             if (!ctracePath) {
                 vscode.window.showErrorMessage('Ctrace binary not found in the extension folder.');
@@ -440,11 +541,32 @@ const CRASH_SIGNATURES = [
     'Assertion failed', 'stack-overflow',
 ];
 
+export async function promptWslInstallation(): Promise<void> {
+    const action = await vscode.window.showErrorMessage(
+        'Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows. Please install WSL and a Linux distribution (e.g. Ubuntu).',
+        'Install WSL Guide',
+        'Copy "wsl --install"'
+    );
+    if (action === 'Install WSL Guide') {
+        vscode.env.openExternal(vscode.Uri.parse('https://learn.microsoft.com/windows/wsl/install'));
+    } else if (action === 'Copy "wsl --install"') {
+        await vscode.env.clipboard.writeText('wsl --install');
+        vscode.window.showInformationMessage('Copied "wsl --install" to clipboard. Open PowerShell as Administrator and run it.');
+    }
+}
+
 function handleNoResults(stdout: string, stderr: string, exitCode: number | null): void {
     const combined = stdout + stderr;
     const crash = CRASH_SIGNATURES.find(sig => combined.includes(sig));
+    const isWslIssue = process.platform === 'win32' && (
+        combined.includes('Windows Subsystem for Linux') ||
+        combined.includes('wsl.exe') ||
+        combined.includes('no installed distributions')
+    );
 
-    if (crash) {
+    if (isWslIssue) {
+        promptWslInstallation();
+    } else if (crash) {
         vscode.window.showErrorMessage(
             `Ctrace crashed (${crash}). This is likely a bug in the analysis tool. See the Output Channel.`
         );

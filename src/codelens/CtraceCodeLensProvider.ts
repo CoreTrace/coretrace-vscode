@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { cleanFunctionName } from '../utils/symbolExtractor';
 
 const FUNCTION_KINDS = new Set([
     vscode.SymbolKind.Function,
@@ -28,15 +29,18 @@ function collectFunctionLenses(
 ): void {
     for (const symbol of symbols) {
         if (FUNCTION_KINDS.has(symbol.kind)) {
-            const range = 'range' in symbol ? symbol.range : symbol.location.range;
-            lenses.push(new vscode.CodeLens(
-                new vscode.Range(range.start.line, 0, range.start.line, 0),
-                {
-                    title: '🛡️ Audit Function',
-                    command: 'ctrace.auditFunction',
-                    arguments: [documentUri, symbol.name],
-                }
-            ));
+            const cleanName = cleanFunctionName(symbol.name);
+            if (cleanName) {
+                const range = 'range' in symbol ? symbol.range : symbol.location.range;
+                lenses.push(new vscode.CodeLens(
+                    new vscode.Range(range.start.line, 0, range.start.line, 0),
+                    {
+                        title: '🛡️ Audit Function',
+                        command: 'ctrace.auditFunction',
+                        arguments: [documentUri, cleanName],
+                    }
+                ));
+            }
         }
         if ('children' in symbol && symbol.children.length > 0) {
             collectFunctionLenses(symbol.children, lenses, documentUri);

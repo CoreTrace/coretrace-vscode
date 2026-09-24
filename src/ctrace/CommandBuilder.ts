@@ -47,14 +47,15 @@ function shellEscapeArg(arg: string): string {
  * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command fails.
  */
 function toWslPath(winPath: string, distroName: string | null = null): string {
+    const normalized = winPath.replace(/\\/g, '/');
     try {
         const args = [
             ...(distroName ? ['-d', distroName] : []),
-            'wslpath', '-u', winPath,
+            'wslpath', '-u', normalized,
         ];
         return cp.execFileSync('wsl', args, { timeout: 5000 }).toString().trim();
     } catch {
-        return winPath.replace(/\\/g, '/').replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+        return normalized.replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
     }
 }
 
@@ -91,7 +92,10 @@ function buildNativeCommand(
     compileCommands = false
 ): BuiltCommand {
     const extraArgs = compileCommands ? ` --compile-commands "${inputFilePath}"` : '';
-    const command = `chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
+    const toolsDir = path.posix.join(os.homedir().replace(/\\/g, '/'), '.coretrace', 'tools');
+    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    const cdTools = `cd "${toolsDir}" 2>/dev/null || true; `;
+    const command = `${cdTools}${envExports}chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
     return { command, tempFiles: [] };
 }
 
@@ -110,12 +114,50 @@ function parseWslUNC(p: string): { distro: string; internalPath: string } | null
     return null;
 }
 
+let cachedWslAvailable: { result: boolean; timestamp: number } | null = null;
+let mockWslAvailable: boolean | null = null;
+
+export function setMockWslAvailableForTesting(mock: boolean | null): void {
+    mockWslAvailable = mock;
+}
+
+/**
+ * Checks whether Windows Subsystem for Linux (WSL) is installed and has at least
+ * one Linux distribution ready to execute commands.
+ */
+export function isWslAvailable(): boolean {
+    if (mockWslAvailable !== null) {
+        return mockWslAvailable;
+    }
+    if (process.platform !== 'win32') {
+        return false;
+    }
+    const now = Date.now();
+    if (cachedWslAvailable && now - cachedWslAvailable.timestamp < 5000) {
+        return cachedWslAvailable.result;
+    }
+    try {
+        const stdout = cp.execFileSync('wsl', ['-l', '-q'], { encoding: 'utf16le', timeout: 5000 });
+        const clean = stdout.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
+        const available = Boolean(clean) && !/no installed distributions|no distribution/i.test(clean);
+        cachedWslAvailable = { result: available, timestamp: now };
+        return available;
+    } catch {
+        cachedWslAvailable = { result: false, timestamp: now };
+        return false;
+    }
+}
+
 async function buildWindowsCommand(
     ctracePath: string,
     inputFilePath: string,
     params: string,
     compileCommands = false
 ): Promise<BuiltCommand> {
+    if (!isWslAvailable()) {
+        throw new Error('Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows. Please install WSL (run "wsl --install" or visit https://learn.microsoft.com/windows/wsl/install).');
+    }
+
     const tempFiles: string[] = [];
 
     const binWsl = parseWslUNC(ctracePath);
@@ -205,7 +247,11 @@ function trySmartDistroExecution(
             libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
         }
 
-        return `${prefix} sh -c "${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
+        const toolsDir = '~/.coretrace/tools';
+        const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+        const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
+
+        return `${prefix} sh -c "${cdTools}${envExports}${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
     } catch {
         return null;
     }
@@ -253,19 +299,16 @@ async function buildFallbackCommand(
     tempFiles: string[],
     compileCommands: boolean
 ): Promise<BuiltCommand> {
-    const ext = path.extname(inputFilePath) || '.c';
     const stamp = `${Date.now()}-${process.pid}`;
 
     const tempBin   = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
-    const tempInput = path.join(os.tmpdir(), `ctrace-input-${stamp}${ext}`);
     const lBin      = `/tmp/ctrace-${stamp}`;
 
     await fs.promises.copyFile(ctracePath, tempBin);
-    await fs.promises.copyFile(inputFilePath, tempInput);
-    tempFiles.push(tempBin, tempInput);
+    tempFiles.push(tempBin);
 
     const wBin = toWslPath(tempBin);
-    const wInput = toWslPath(tempInput);
+    const wInput = toWslPath(inputFilePath);
 
     const validatedParamsTokens = parseAndValidateParams(params).map(token => {
         const eqIndex = token.indexOf('=');
@@ -284,6 +327,10 @@ async function buildFallbackCommand(
     const libDir = getLibDirForBinary(ctracePath);
     const libEnv = libDir ? `export LD_LIBRARY_PATH=${shellEscapeArg(toWslPath(libDir))}:"$LD_LIBRARY_PATH" && ` : '';
 
-    const command = `wsl sh -c "${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
+    const toolsDir = '~/.coretrace/tools';
+    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
+
+    const command = `wsl sh -c "${cdTools}${envExports}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
     return { command, tempFiles };
 }

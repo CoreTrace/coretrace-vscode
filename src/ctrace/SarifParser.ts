@@ -20,7 +20,12 @@ export async function parseSarifOutput(stdout: string, reportFilePath?: string):
         try {
             const content = (await fs.promises.readFile(reportFilePath, 'utf-8')).trim();
             if (content) {
-                sarif = JSON.parse(content) as SarifLog;
+                const parsed = JSON.parse(content);
+                if (parsed && Array.isArray(parsed.runs)) {
+                    sarif = parsed as SarifLog;
+                } else if (parsed && Array.isArray(parsed.diagnostics)) {
+                    sarif = convertStackAnalyzerToSarif(parsed as StackAnalyzerOutput);
+                }
             }
         } catch (e: unknown) {
             // ENOENT is normal when ctrace didn’t write a report — suppress it.
