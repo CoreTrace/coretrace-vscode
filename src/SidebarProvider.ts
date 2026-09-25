@@ -78,8 +78,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "execute-command": {
-            // Only allow explicitly whitelisted commands to prevent arbitrary command execution
-            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
@@ -404,32 +403,83 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
 					<!-- Results -->
 					<div id="results-container" class="results-hidden">
-						<div class="results-header">
-							<div class="results-title">
-								<i data-lucide="bug"></i>
-								<span>Vulnerabilities</span>
-							</div>
-							<span class="badge" id="vuln-count">0</span>
-						</div>
-            <div class="findings-summary" id="findings-summary" aria-label="Finding summary">
-              <span class="summary-item"><strong id="summary-errors">0</strong><small>Errors</small></span>
-              <span class="summary-item"><strong id="summary-warnings">0</strong><small>Warnings</small></span>
-              <span class="summary-item"><strong id="summary-notes">0</strong><small>Info</small></span>
+
+            <!-- Result View Tabs -->
+            <div class="results-tab-bar" role="tablist" aria-label="Analysis Results Tabs">
+              <button class="results-tab active" id="tab-findings-btn" type="button" role="tab" aria-selected="true" aria-controls="panel-findings">
+                <i data-lucide="shield-alert"></i>
+                <span>Findings</span>
+                <span class="tab-badge" id="tab-vuln-badge">0</span>
+              </button>
+              <button class="results-tab" id="tab-stack-btn" type="button" role="tab" aria-selected="false" aria-controls="panel-stack">
+                <i data-lucide="layers"></i>
+                <span>Stack Tree</span>
+                <span class="tab-badge stack-tab-badge" id="tab-stack-badge">0</span>
+              </button>
             </div>
-            <div class="findings-toolbar">
-              <label class="search-field" for="findings-search">
-                <i data-lucide="search"></i>
-                <input id="findings-search" type="search" placeholder="Search findings" autocomplete="off">
-              </label>
-              <select id="severity-filter" aria-label="Filter findings by severity">
-                <option value="all">All severities</option>
-                <option value="error">Errors</option>
-                <option value="warning">Warnings</option>
-                <option value="note">Info</option>
-              </select>
+
+            <!-- Panel 1: Findings (Vulnerabilities) -->
+            <div id="panel-findings" class="tab-panel active" role="tabpanel">
+              <div class="findings-summary" id="findings-summary" aria-label="Finding summary">
+                <span class="summary-item"><strong id="summary-errors">0</strong><small>Errors</small></span>
+                <span class="summary-item"><strong id="summary-warnings">0</strong><small>Warnings</small></span>
+                <span class="summary-item"><strong id="summary-notes">0</strong><small>Info</small></span>
+              </div>
+              <div class="findings-toolbar">
+                <label class="search-field" for="findings-search">
+                  <i data-lucide="search"></i>
+                  <input id="findings-search" type="search" placeholder="Search findings" autocomplete="off">
+                </label>
+                <select id="severity-filter" aria-label="Filter findings by severity">
+                  <option value="all">All severities</option>
+                  <option value="error">Errors</option>
+                  <option value="warning">Warnings</option>
+                  <option value="note">Info</option>
+                </select>
+              </div>
+              <div class="findings-empty" id="findings-empty" hidden>No findings match the current filters.</div>
+              <ul id="vuln-list"></ul>
             </div>
-            <div class="findings-empty" id="findings-empty" hidden>No findings match the current filters.</div>
-						<ul id="vuln-list"></ul>
+
+            <!-- Panel 2: Stack Visualizer (Call Tree & Memory) -->
+            <div id="panel-stack" class="tab-panel" role="tabpanel" hidden>
+              <!-- Metrics Cards -->
+              <div class="stack-metrics-grid">
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-peak-val">0 B</span>
+                  <span class="stack-metric-label">Peak Stack</span>
+                </div>
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-recursion-val">0</span>
+                  <span class="stack-metric-label">Recursion</span>
+                </div>
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-functions-val">0</span>
+                  <span class="stack-metric-label">Functions</span>
+                </div>
+              </div>
+
+              <!-- Call Chains Section -->
+              <div class="stack-section-title">
+                <i data-lucide="git-commit"></i><span>Call Chains &amp; Growth</span>
+              </div>
+              <div id="stack-chains-container" class="stack-chains-container">
+                <div class="stack-empty-hint">No call chain data available.</div>
+              </div>
+
+              <!-- Functions Hierarchy Section -->
+              <div class="stack-section-title" style="margin-top: 14px;">
+                <i data-lucide="list-tree"></i><span>Function Stack Footprints</span>
+              </div>
+              <div class="findings-toolbar" style="margin-bottom: 8px;">
+                <label class="search-field" for="stack-search" style="width: 100%;">
+                  <i data-lucide="search"></i>
+                  <input id="stack-search" type="search" placeholder="Filter functions by name" autocomplete="off">
+                </label>
+              </div>
+              <ul id="stack-fn-list" class="stack-fn-list"></ul>
+            </div>
+
 					</div>
 
 					<!-- Empty state -->

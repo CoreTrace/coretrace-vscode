@@ -14,6 +14,8 @@ import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
 import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
+import { StackManager } from './ctrace/StackManager';
+import { parseStackReport } from './ctrace/StackParser';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -197,6 +199,13 @@ export function activate(context: vscode.ExtensionContext) {
                     sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
                     return;
                 }
+                const ext = path.extname(targetUri.fsPath).toLowerCase();
+                const C_EXTENSIONS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh']);
+                if (targetUri.scheme !== 'file' || !C_EXTENSIONS.has(ext)) {
+                    vscode.window.showWarningMessage('Please open or focus a C/C++ source file (.c, .cpp, .cc, .cxx) to analyse.');
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
                 filesToAnalyze = [targetUri.fsPath];
             }
 
@@ -338,8 +347,34 @@ export function activate(context: vscode.ExtensionContext) {
                                 vscode.window.showWarningMessage(`Analysis of ${fileName} timed out (60s).`);
                             }
 
+                            let reportContent = '';
+                            try {
+                                if (reportPath && fs.existsSync(reportPath)) {
+                                    reportContent = await fs.promises.readFile(reportPath, 'utf8');
+                                }
+                            } catch { /* ignore */ }
+
                             const sarif = await parseSarifOutput(stdout, reportPath);
                             tryDelete(reportPath);
+
+                            // Extract and publish stack analyzer data
+                            try {
+                                let sourceCode: string | undefined;
+                                try {
+                                    sourceCode = await fs.promises.readFile(fp, 'utf8');
+                                } catch { /* ignore */ }
+
+                                const stackReport = parseStackReport(reportContent || stdout, sourceCode);
+                                if (stackReport && stackReport.functions.length > 0) {
+                                    StackManager.instance.updateStackData(stackReport);
+                                    sidebarProvider.postMessage({
+                                        type: 'stack-data',
+                                        data: stackReport,
+                                    });
+                                }
+                            } catch (e) {
+                                console.warn('[StackAnalyzer] Error parsing stack data:', e);
+                            }
                             if (sarif) {
                                 allSarif.push(sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace);
@@ -438,7 +473,18 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.clearAnalysisCache', () => {
             clearCache();
+            StackManager.instance.clear();
             vscode.window.showInformationMessage('Ctrace analysis cache cleared.');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.focusStackFunction', async (functionName?: string) => {
+            await vscode.commands.executeCommand('workbench.view.extension.ctrace-sidebar-view');
+            sidebarProvider.postMessage({
+                type: 'focus-stack-tab',
+                functionName,
+            });
         })
     );
 

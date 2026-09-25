@@ -64,6 +64,10 @@
       {
         "command": "ctrace.installDependencies",
         "title": "CoreTrace: Install Analyzers & Dependencies"
+      },
+      {
+        "command": "ctrace.focusStackFunction",
+        "title": "CoreTrace: View Function in Stack Visualizer"
       }
     ]
   },

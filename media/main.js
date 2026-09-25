@@ -10,6 +10,19 @@
     const findingsSearch = document.getElementById('findings-search');
     const severityFilter = document.getElementById('severity-filter');
     const findingsEmpty = document.getElementById('findings-empty');
+    const tabFindingsBtn = document.getElementById('tab-findings-btn');
+    const tabStackBtn = document.getElementById('tab-stack-btn');
+    const panelFindings = document.getElementById('panel-findings');
+    const panelStack = document.getElementById('panel-stack');
+    const tabVulnBadge = document.getElementById('tab-vuln-badge');
+    const tabStackBadge = document.getElementById('tab-stack-badge');
+    const stackPeakVal = document.getElementById('stack-peak-val');
+    const stackRecursionVal = document.getElementById('stack-recursion-val');
+    const stackFunctionsVal = document.getElementById('stack-functions-val');
+    const stackChainsContainer = document.getElementById('stack-chains-container');
+    const stackFnList = document.getElementById('stack-fn-list');
+    const stackSearch = document.getElementById('stack-search');
+    let currentStackReport = null;
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
     const statusDetail = document.getElementById('status-detail');
@@ -219,6 +232,9 @@
 
     if (findingsSearch) { findingsSearch.addEventListener('input', renderFilteredFindings); }
     if (severityFilter) { severityFilter.addEventListener('change', renderFilteredFindings); }
+    if (tabFindingsBtn) { tabFindingsBtn.addEventListener('click', () => switchResultTab('findings')); }
+    if (tabStackBtn) { tabStackBtn.addEventListener('click', () => switchResultTab('stack')); }
+    if (stackSearch) { stackSearch.addEventListener('input', renderFilteredStackFunctions); }
 
     const smtEnabled = document.getElementById('smt-enabled');
     const smtControls = ['smt-backend', 'smt-secondary-backend', 'smt-mode', 'smt-timeout-ms', 'smt-rules']
@@ -458,6 +474,15 @@
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
                 break;
+            case 'stack-data':
+                handleStackData(msg.data);
+                break;
+            case 'focus-stack-tab':
+                switchResultTab('stack');
+                if (msg.functionName) {
+                    highlightStackFunction(msg.functionName);
+                }
+                break;
         }
     });
 
@@ -558,6 +583,207 @@
             vulnList.innerHTML = '<li class="info-item">No issues detected for the selected scope.</li>';
             if (typeof lucide !== 'undefined') { lucide.createIcons(); }
         }
+
+        if (tabVulnBadge) {
+            tabVulnBadge.textContent = String(count);
+        }
+    }
+
+    function switchResultTab(tabName) {
+        const isFindings = tabName === 'findings';
+        if (tabFindingsBtn) {
+            tabFindingsBtn.classList.toggle('active', isFindings);
+            tabFindingsBtn.setAttribute('aria-selected', isFindings ? 'true' : 'false');
+        }
+        if (tabStackBtn) {
+            tabStackBtn.classList.toggle('active', !isFindings);
+            tabStackBtn.setAttribute('aria-selected', !isFindings ? 'true' : 'false');
+        }
+        if (panelFindings) { panelFindings.hidden = !isFindings; }
+        if (panelStack) { panelStack.hidden = isFindings; }
+
+        if (!isFindings && typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) { return '0 B'; }
+        if (bytes < 1024) { return `${bytes} B`; }
+        if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function handleStackData(report) {
+        if (!report) { return; }
+        currentStackReport = report;
+
+        if (emptyState) { emptyState.style.display = 'none'; }
+        if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
+
+        const fnCount = (report.functions || []).length;
+        if (tabStackBadge) {
+            tabStackBadge.textContent = String(fnCount);
+        }
+
+        if (stackPeakVal) {
+            stackPeakVal.textContent = formatBytes(report.peakStack);
+        }
+
+        if (stackRecursionVal) {
+            const hasRec = (report.recursiveCount || 0) > 0;
+            stackRecursionVal.textContent = hasRec ? `${report.recursiveCount} Cycle${report.recursiveCount > 1 ? 's' : ''}` : '0 (Safe)';
+            stackRecursionVal.className = `stack-metric-val ${hasRec ? 'metric-danger' : 'metric-safe'}`;
+        }
+
+        if (stackFunctionsVal) {
+            stackFunctionsVal.textContent = String(fnCount);
+        }
+
+        renderCallChains(report);
+        renderFilteredStackFunctions();
+    }
+
+    function renderCallChains(report) {
+        if (!stackChainsContainer) { return; }
+        stackChainsContainer.innerHTML = '';
+
+        const chains = report.callGraph?.chains || [];
+        if (chains.length === 0) {
+            stackChainsContainer.innerHTML = '<div class="stack-empty-hint">No call chain data available.</div>';
+            return;
+        }
+
+        chains.forEach((chain, idx) => {
+            const hasRecursion = chain.some(step => step.isRecursive);
+            const totalStack = chain[chain.length - 1]?.cumulativeStack || 0;
+
+            const card = document.createElement('div');
+            card.className = `call-chain-card ${hasRecursion ? 'chain-recursive' : ''}`;
+
+            const header = document.createElement('div');
+            header.className = 'chain-header';
+            header.innerHTML = `
+                <span class="chain-title">Chain #${idx + 1} (${formatBytes(totalStack)})</span>
+                ${hasRecursion
+                    ? '<span class="stack-pill pill-danger">⚠️ Recursive Cycle</span>'
+                    : '<span class="stack-pill pill-safe">Safe Path</span>'}
+            `;
+            card.appendChild(header);
+
+            const flow = document.createElement('div');
+            flow.className = 'call-chain-flow';
+
+            chain.forEach((step, sIdx) => {
+                const nodeBtn = document.createElement('button');
+                nodeBtn.type = 'button';
+                nodeBtn.className = `chain-node ${step.isRecursive ? 'node-recursive' : ''}`;
+                nodeBtn.title = `Cumulative stack: ${formatBytes(step.cumulativeStack)} (local: ${formatBytes(step.localStack)})`;
+                nodeBtn.innerHTML = `<span>${escapeHtml(step.name)}()</span><small>${formatBytes(step.localStack)}</small>`;
+
+                nodeBtn.addEventListener('click', () => {
+                    const fn = report.functions.find(f => f.name === step.name);
+                    if (fn && fn.file) {
+                        vscode.postMessage({
+                            type: 'open-file',
+                            path: fn.file,
+                            line: fn.line ? fn.line - 1 : 0
+                        });
+                    }
+                });
+                flow.appendChild(nodeBtn);
+
+                if (sIdx < chain.length - 1) {
+                    const arrow = document.createElement('span');
+                    arrow.className = 'chain-arrow';
+                    arrow.textContent = '➔';
+                    flow.appendChild(arrow);
+                }
+            });
+
+            card.appendChild(flow);
+            stackChainsContainer.appendChild(card);
+        });
+
+        if (typeof lucide !== 'undefined') { lucide.createIcons(); }
+    }
+
+    function renderFilteredStackFunctions() {
+        if (!stackFnList || !currentStackReport) { return; }
+        stackFnList.innerHTML = '';
+
+        const query = stackSearch ? stackSearch.value.trim().toLowerCase() : '';
+        const list = (currentStackReport.functions || []).filter(fn => {
+            return !query || fn.name.toLowerCase().includes(query);
+        });
+
+        if (list.length === 0) {
+            stackFnList.innerHTML = '<li class="stack-empty-hint">No functions match the search filter.</li>';
+            return;
+        }
+
+        const peak = currentStackReport.peakStack || 1;
+
+        // Sort by maxStack descending
+        list.sort((a, b) => b.maxStack - a.maxStack);
+
+        list.forEach(fn => {
+            const card = document.createElement('li');
+            const isRec = fn.isRecursive || fn.hasInfiniteSelfRecursion;
+            card.className = `stack-fn-card ${isRec ? 'is-recursive' : 'is-safe'}`;
+            card.id = `stack-fn-${escapeId(fn.name)}`;
+
+            const pct = Math.max(4, Math.min(100, Math.round((fn.maxStack / peak) * 100)));
+
+            card.innerHTML = `
+                <div class="stack-fn-header">
+                    <span class="stack-fn-name">
+                        <i data-lucide="code-2"></i>
+                        <span>${escapeHtml(fn.name)}()</span>
+                    </span>
+                    <div class="stack-fn-badges">
+                        ${isRec ? '<span class="stack-pill pill-danger">⚠️ Cycle</span>' : '<span class="stack-pill pill-safe">Safe</span>'}
+                        ${fn.hasDynamicAlloca ? '<span class="stack-pill pill-danger">alloca()</span>' : ''}
+                    </div>
+                </div>
+                <div class="stack-bar-wrap">
+                    <div class="stack-bar-fill ${isRec ? 'fill-danger' : ''}" style="width: ${pct}%"></div>
+                </div>
+                <div class="stack-fn-meta">
+                    <span>Local frame: <strong>${formatBytes(fn.localStack)}</strong></span>
+                    <span>Max stack: <strong>${formatBytes(fn.maxStack)}</strong> (${pct}%)</span>
+                </div>
+            `;
+
+            card.addEventListener('click', () => {
+                if (fn.file) {
+                    vscode.postMessage({
+                        type: 'open-file',
+                        path: fn.file,
+                        line: fn.line ? fn.line - 1 : 0
+                    });
+                }
+            });
+
+            stackFnList.appendChild(card);
+        });
+
+        if (typeof lucide !== 'undefined') { lucide.createIcons(); }
+    }
+
+    function highlightStackFunction(funcName) {
+        if (!funcName) { return; }
+        const card = document.getElementById(`stack-fn-${escapeId(funcName)}`);
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.add('is-focused');
+            setTimeout(() => card.classList.remove('is-focused'), 2000);
+        }
+    }
+
+    function escapeId(name) {
+        return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
     }
 
     function renderFilteredFindings() {

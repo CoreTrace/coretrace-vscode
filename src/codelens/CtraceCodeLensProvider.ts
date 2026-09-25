@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { cleanFunctionName } from '../utils/symbolExtractor';
+import { StackManager } from '../ctrace/StackManager';
 
 const FUNCTION_KINDS = new Set([
     vscode.SymbolKind.Function,
@@ -7,8 +8,17 @@ const FUNCTION_KINDS = new Set([
     vscode.SymbolKind.Constructor,
 ]);
 
-/** Adds an Audit Function action above C/C++ function definitions. */
+/** Adds Audit Function and Stack Footprint actions above C/C++ function definitions. */
 export class CtraceCodeLensProvider implements vscode.CodeLensProvider {
+    private _onDidChangeCodeLenses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
+    public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
+
+    constructor() {
+        StackManager.instance.onDidUpdateStackData(() => {
+            this._onDidChangeCodeLenses.fire();
+        });
+    }
+
     async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
         const symbols = await vscode.commands.executeCommand<readonly (vscode.DocumentSymbol | vscode.SymbolInformation)[] | undefined>(
             'vscode.executeDocumentSymbolProvider',
@@ -32,14 +42,37 @@ function collectFunctionLenses(
             const cleanName = cleanFunctionName(symbol.name);
             if (cleanName) {
                 const range = 'range' in symbol ? symbol.range : symbol.location.range;
+                const lensRange = new vscode.Range(range.start.line, 0, range.start.line, 0);
+
+                // 1. Audit Function Action
                 lenses.push(new vscode.CodeLens(
-                    new vscode.Range(range.start.line, 0, range.start.line, 0),
+                    lensRange,
                     {
                         title: '🛡️ Audit Function',
                         command: 'ctrace.auditFunction',
                         arguments: [documentUri, cleanName],
                     }
                 ));
+
+                // 2. Stack Footprint & Recursion Action
+                const stackInfo = StackManager.instance.getFunction(cleanName);
+                if (stackInfo) {
+                    const recursionText = (stackInfo.isRecursive || stackInfo.hasInfiniteSelfRecursion)
+                        ? '⚠️ Recursion: Cycle detected'
+                        : 'Recursion: Safe';
+                    
+                    const footprintTitle = `📊 Stack: ~${stackInfo.maxStack} bytes (local: ${stackInfo.localStack}B) | ${recursionText}`;
+
+                    lenses.push(new vscode.CodeLens(
+                        lensRange,
+                        {
+                            title: footprintTitle,
+                            command: 'ctrace.focusStackFunction',
+                            arguments: [cleanName],
+                            tooltip: `Peak stack usage: ${stackInfo.maxStack} bytes. Click to view in Stack Visualizer.`,
+                        }
+                    ));
+                }
             }
         }
         if ('children' in symbol && symbol.children.length > 0) {
