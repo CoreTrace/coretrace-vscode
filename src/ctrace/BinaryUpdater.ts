@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import axios from 'axios';
 import * as tar from 'tar';
 import { pipeline } from 'stream/promises';
-import { Transform } from 'stream';
+import { Readable, Transform } from 'stream';
 import { locateBinary } from './BinaryLocator';
 
 const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrace/releases/latest';
@@ -66,11 +65,14 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     }
 
     try {
-        const response = await axios.get(REPO_LATEST_RELEASE_URL, {
+        const response = await fetch(REPO_LATEST_RELEASE_URL, {
             headers: { 'User-Agent': 'vscode-coretrace' },
-            timeout: 5000 // Don't block forever
+            signal: AbortSignal.timeout(5000)
         });
-        const release = response.data;
+        if (!response.ok) {
+            throw new Error(`Failed to check releases: HTTP ${response.status}`);
+        }
+        const release = await response.json() as { tag_name: string; assets: any[] };
         const latestVersion = release.tag_name;
         
         const currentVersion = context.globalState.get<string>('coretrace-version');
@@ -166,20 +168,20 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
     const controller = new AbortController();
     let timeoutId = setTimeout(() => controller.abort(new Error("Download stalled")), 30000);
 
-    const response = await axios({
-        url,
-        method: 'GET',
-        responseType: 'stream',
-        headers,
-        signal: controller.signal
-    });
+    let response: Response;
+    try {
+        response = await fetch(url, { headers, signal: controller.signal });
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
 
-    if (response.status !== 200) {
+    if (!response.ok || !response.body) {
         clearTimeout(timeoutId);
         throw new Error(`Failed to download asset: HTTP ${response.status}`);
     }
 
-    const totalLength = parseInt(response.headers['content-length'], 10);
+    const totalLength = parseInt(response.headers.get('content-length') || '', 10);
     let downloadedLength = 0;
 
     const progressStream = new Transform({
@@ -213,7 +215,7 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
             strip: 1
         });
 
-        await pipeline(response.data, progressStream, extractStream);
+        await pipeline(Readable.fromWeb(response.body as any), progressStream, extractStream);
         clearTimeout(timeoutId);
 
         if (progressListener) { progressListener("Finishing..."); }

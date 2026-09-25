@@ -16,6 +16,7 @@ import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/Workspac
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
 import { parseStackReport } from './ctrace/StackParser';
+import { FindingsStore } from './ctrace/FindingsStore';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -24,7 +25,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(output);
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    const sidebarProvider = new SidebarProvider(context.extensionUri);
+    const findingsStore = new FindingsStore(context.workspaceState);
+    const sidebarProvider = new SidebarProvider(context.extensionUri, findingsStore);
     // Register the provider itself as a Disposable so its view-scoped
     // subscriptions are guaranteed to be released on extension deactivation,
     // even if `onDidDispose` is never fired by VS Code.
@@ -39,11 +41,6 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         sidebarProvider.postMessage({ type: 'analysis-downloading', progress: msg });
-    });
-
-    // Initialise and pre-fetch the binary in the background on startup
-    ensureBinary(context, output).catch((err) => {
-        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
     });
 
     const codeLensProvider = new CtraceCodeLensProvider();
@@ -82,12 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
         return p;
     }
 
-    // Background check for missing external dependencies
-    checkDependencies().then((depStatus) => {
-        if (!depStatus.allInstalled) {
-            output.appendLine(`[ctrace] Note: Some external analyzers are not configured: ${depStatus.missing.join(', ')}. Run "CoreTrace: Install Analyzers & Dependencies" to set them up.`);
-        }
-    }).catch(() => {});
+    // Check dependencies and locate the binary when an analysis is requested.
 
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(
@@ -364,7 +356,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     sourceCode = await fs.promises.readFile(fp, 'utf8');
                                 } catch { /* ignore */ }
 
-                                const stackReport = parseStackReport(reportContent || stdout, sourceCode);
+                                const stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
                                 if (stackReport && stackReport.functions.length > 0) {
                                     StackManager.instance.updateStackData(stackReport);
                                     sidebarProvider.postMessage({
@@ -413,6 +405,11 @@ export function activate(context: vscode.ExtensionContext) {
                         const merged = mergeSarifDocs(allSarif);
                         const total = countResults(merged);
 
+                        try {
+                            await findingsStore.save(merged);
+                        } catch (error) {
+                            output.appendLine(`[ctrace] Could not save the latest findings: ${error}`);
+                        }
                         sidebarProvider.postMessage({
                             type: 'analysis-result',
                             data: merged,
@@ -471,10 +468,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.clearAnalysisCache', () => {
+        vscode.commands.registerCommand('ctrace.clearAnalysisCache', async () => {
             clearCache();
             StackManager.instance.clear();
-            vscode.window.showInformationMessage('Ctrace analysis cache cleared.');
+            await findingsStore.clear();
+            sidebarProvider.postMessage({ type: 'clear-results' });
+            vscode.window.showInformationMessage('Ctrace analysis cache and saved results cleared.');
         })
     );
 

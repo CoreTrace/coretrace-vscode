@@ -65,10 +65,23 @@ int main() { funcA(1); recursiveFunc(2); return 0; }
         assert.ok(report.callGraph);
         assert.ok(report.callGraph.nodes.length >= 5);
         assert.ok(report.callGraph.chains.length > 0);
+        assert.ok(!report.callGraph.edges.some(edge => edge.from === edge.to && edge.from !== 'recursiveFunc'),
+            'Function definitions must not be mistaken for self calls');
 
         // Check if main -> funcA -> funcB -> funcC chain exists
         const mainChain = report.callGraph.chains.find(c => c[0].name === 'main' && c.some(s => s.name === 'funcC'));
         assert.ok(mainChain, 'Should construct call chain from main to funcC');
+    });
+
+    test('uses reported callees without inventing stack-size relationships', () => {
+        const report = parseStackReport(JSON.stringify({ functions: [
+            { name: 'main', localStack: 16, maxStack: 128, callees: ['worker'] },
+            { name: 'worker', localStack: 48, maxStack: 48 },
+            { name: 'unrelated', localStack: 8, maxStack: 24 }
+        ] }));
+        assert.ok(report);
+        assert.deepStrictEqual(report.callGraph?.edges.map(edge => [edge.from, edge.to]), [['main', 'worker']]);
+        assert.ok(report.callGraph?.nodes.some(node => node.name === 'unrelated'));
     });
 
     test('parses plaintext IR stack analyzer report', () => {

@@ -1,11 +1,15 @@
 import * as vscode from "vscode";
 import { isUpdatingBinary } from "./ctrace/BinaryUpdater";
+import { StackManager } from "./ctrace/StackManager";
+import { FindingsStore } from "./ctrace/FindingsStore";
 
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
   private _disposables: vscode.Disposable[] = [];
+  private _ready = false;
+  private _pendingMessages: any[] = [];
 
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(private readonly _extensionUri: vscode.Uri, private readonly _findingsStore: FindingsStore) {}
 
   public dispose(): void {
     while (this._disposables.length) {
@@ -16,7 +20,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   public postMessage(msg: any): Thenable<boolean> | undefined {
-    return this._view?.webview.postMessage(msg);
+    if (!this._view || !this._ready) {
+      this._pendingMessages.push(msg);
+      return undefined;
+    }
+    return this._view.webview.postMessage(msg);
   }
 
   public resolveWebviewView(
@@ -25,6 +33,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
+    this._ready = false;
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -40,6 +49,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
 
     const syncBinaryStatus = () => {
+      // Reflect only an active download; startup leaves the button ready.
       if (isUpdatingBinary()) {
         this._view?.webview.postMessage({ type: 'analysis-downloading', progress: 'In progress…' });
       } else {
@@ -54,13 +64,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
     this._disposables.push(activeEditorListener);
-    webviewView.onDidDispose(() => activeEditorListener.dispose());
+    webviewView.onDidDispose(() => {
+      activeEditorListener.dispose();
+      if (this._view === webviewView) {
+        this._view = undefined;
+        this._ready = false;
+      }
+    });
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "webview-ready": {
+          this._ready = true;
           syncBinaryStatus();
           postActiveFile(vscode.window.activeTextEditor);
+          const savedFindings = this._findingsStore.get();
+          if (savedFindings && !this._pendingMessages.some(message => message.type === "analysis-result" || message.type === "clear-results")) {
+            webviewView.webview.postMessage({ type: "analysis-result", data: savedFindings.report, restored: true, savedAt: savedFindings.savedAt });
+          }
+          const latestStack = StackManager.instance.getLatestReport();
+          if (latestStack && !this._pendingMessages.some(message => message.type === "stack-data")) {
+            webviewView.webview.postMessage({ type: "stack-data", data: latestStack });
+          }
+          for (const message of this._pendingMessages.splice(0)) {
+            webviewView.webview.postMessage(message);
+          }
           break;
         }
         case "onInfo": {
@@ -103,51 +131,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "open-file": {
-             // Open file at specific line
-             // Handle hybrid paths: If path starts with /mnt/c/, convert to C:/...
-             // OR: Just fallback to the currently active editor if the filename matches!
-             let filePathToOpen = data.path;
-
-             try {
-                // Heuristic: If we are in Windows context but path is WSL /mnt style
-                if (filePathToOpen.startsWith('/mnt/')) {
-                    // Quick map: /mnt/c/ -> c:/
-                     filePathToOpen = filePathToOpen.replace(/^\/mnt\/([a-z])\//, (match:string, drive:string) => {
-                         return `${drive.toUpperCase()}:/`;
-                     });
-                } else if (filePathToOpen.startsWith('\\mnt\\')) {
-                      filePathToOpen = filePathToOpen.replace(/^\\mnt\\([a-z])\\/, (match:string, drive:string) => {
-                         return `${drive.toUpperCase()}:/`;
-                     });
-                }
-                
-                // If it's still weird or nonexistent, and the user has a file open, use that if basename matches
-                const active = vscode.window.activeTextEditor;
-                if (active) {
-                     const activeBasename = active.document.fileName.split(/[\\/]/).pop();
-                     const targetBasename = filePathToOpen.split(/[\\/]/).pop();
-                     if (activeBasename === targetBasename) {
-                         filePathToOpen = active.document.uri.fsPath;
-                     }
-                }
-
-                const openUri = vscode.Uri.file(filePathToOpen);
-                
-                // Use showTextDocument directly with the active doc if it matches, to avoid reload flicker
-                const doc = await vscode.workspace.openTextDocument(openUri);
-                const editor = await vscode.window.showTextDocument(doc);
-                
-                // Add minor delay or ensure range valid
-                const safeLine = Math.max(0, data.line); 
-                const range = new vscode.Range(safeLine, 0, safeLine, 0);
-                
-                editor.selection = new vscode.Selection(range.start, range.end);
-                editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-
-             } catch(e) {
-                 vscode.window.showErrorMessage(`Failed to open file: ${e}`);
-             }
-             break;
+          try {
+            const openUri = await resolveReportedFileUri(data.path);
+            if (!openUri) {
+              vscode.window.showErrorMessage(`Could not find source file in this workspace: ${data.path}`);
+              break;
+            }
+            const doc = await vscode.workspace.openTextDocument(openUri);
+            const editor = await vscode.window.showTextDocument(doc);
+            const safeLine = Number.isFinite(data.line) ? Math.max(0, Math.floor(data.line)) : 0;
+            const line = Math.min(safeLine, Math.max(0, doc.lineCount - 1));
+            const range = new vscode.Range(line, 0, line, 0);
+            editor.selection = new vscode.Selection(range.start, range.end);
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+          } catch (e) {
+            vscode.window.showErrorMessage(`Failed to open file: ${e}`);
+          }
+          break;
         }
       }
     });
@@ -459,13 +459,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 </div>
               </div>
 
-              <!-- Call Chains Section -->
-              <div class="stack-section-title">
-                <i data-lucide="git-commit"></i><span>Call Chains &amp; Growth</span>
+              <!-- Connected call graph -->
+              <div class="stack-graph-heading">
+                <div class="stack-section-title"><i data-lucide="workflow"></i><span>Call graph</span></div>
+                <span id="stack-graph-count" class="stack-graph-count">0 links</span>
               </div>
-              <div id="stack-chains-container" class="stack-chains-container">
-                <div class="stack-empty-hint">No call chain data available.</div>
+              <div class="stack-graph-toolbar" aria-label="Call graph controls">
+                <span class="stack-graph-caption">Drag to explore</span>
+                <div class="stack-graph-zoom">
+                  <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
+                  <span id="stack-zoom-label">100%</span>
+                  <button id="stack-zoom-in" type="button" aria-label="Zoom in" title="Zoom in"><i data-lucide="plus"></i></button>
+                </div>
               </div>
+              <div id="stack-graph-container" class="stack-graph-container" aria-label="Function call graph">
+                <div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>
+              </div>
+              <div id="stack-graph-inspector" class="stack-graph-inspector" hidden></div>
+              <div class="stack-graph-legend"><span><i class="legend-link"></i>Call</span><span><i class="legend-cycle"></i>Recursion</span><span>Click a node to inspect</span></div>
 
               <!-- Functions Hierarchy Section -->
               <div class="stack-section-title" style="margin-top: 14px;">
@@ -501,6 +512,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 			</body>
 			</html>`;
   }
+}
+
+async function resolveReportedFileUri(reportedPath: unknown): Promise<vscode.Uri | null> {
+  if (typeof reportedPath !== 'string' || !reportedPath.trim()) { return null; }
+
+  const normalized = reportedPath.replace(/\\/g, '/');
+  const hostPath = process.platform === 'win32'
+    ? normalized.replace(/^\/mnt\/([a-z])\//i, (_match, drive: string) => `${drive.toUpperCase()}:/`)
+    : normalized;
+  const segments = normalized.split('/').filter(Boolean);
+  // Reports can point to a different checkout. Prefer the matching file in
+  // the workspace whose analysis produced the report.
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const rootName = folder.uri.path.split('/').filter(Boolean).pop();
+    if (!rootName) { continue; }
+    const rootIndex = segments.map(part => part.toLowerCase()).lastIndexOf(rootName.toLowerCase());
+    if (rootIndex < 0 || rootIndex === segments.length - 1) { continue; }
+    const candidate = vscode.Uri.joinPath(folder.uri, ...segments.slice(rootIndex + 1));
+    try {
+      await vscode.workspace.fs.stat(candidate);
+      return candidate;
+    } catch { /* Try the next workspace folder. */ }
+  }
+
+  const direct = vscode.Uri.file(hostPath);
+  try {
+    await vscode.workspace.fs.stat(direct);
+    return direct;
+  } catch { /* Try the active document as a final fallback. */ }
+
+  const active = vscode.window.activeTextEditor?.document.uri;
+  if (active && active.path.split('/').pop()?.toLowerCase() === segments[segments.length - 1]?.toLowerCase()) {
+    return active;
+  }
+  return null;
 }
 
 function getNonce() {

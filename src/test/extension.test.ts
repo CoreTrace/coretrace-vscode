@@ -18,6 +18,14 @@ suite('Extension Activation & Integration Test Suite', function () {
         assert.strictEqual(extension.isActive, true, 'Extension failed to switch to active state.');
     });
 
+    test('Sidebar view opens in VS Code', async () => {
+        const extension = vscode.extensions.getExtension('CoreTrace.coretrace-audit');
+        assert.ok(extension);
+        await extension.activate();
+        await vscode.commands.executeCommand('workbench.view.extension.ctrace-sidebar-view');
+        await vscode.commands.executeCommand('ctrace-audit-view.focus');
+    });
+
     test('Extension registers all expected commands', async () => {
         const extension = vscode.extensions.getExtension('CoreTrace.coretrace-audit');
         assert.ok(extension, 'Extension not found. Cannot check commands.');

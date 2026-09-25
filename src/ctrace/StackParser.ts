@@ -42,6 +42,7 @@ export function parseStackReport(reportContent: string, sourceCode?: string): St
                         isRecursive: Boolean(f.isRecursive),
                         hasInfiniteSelfRecursion: Boolean(f.hasInfiniteSelfRecursion),
                         exceedsLimit: Boolean(f.exceedsLimit),
+                        callees: Array.isArray(f.callees) ? f.callees.filter((name: unknown) => typeof name === 'string') : undefined,
                     }));
                 }
             }
@@ -116,17 +117,18 @@ function parseIrReportText(text: string): StackFunction[] {
  * Searches the source file for function definition line numbers.
  */
 function attachSourceLines(functions: StackFunction[], sourceCode: string): void {
-    const lines = sourceCode.split('\n');
     for (const fn of functions) {
-        // Look for e.g. "int funcA(" or "void funcA(" or "funcA("
-        const pattern = new RegExp(`\\b${escapeRegExp(fn.name)}\\s*\\(`, 'm');
-        for (let i = 0; i < lines.length; i++) {
-            if (pattern.test(lines[i])) {
-                fn.line = i + 1;
-                break;
-            }
+        const definition = findFunctionDefinition(sourceCode, fn.name);
+        if (definition) {
+            fn.line = sourceCode.slice(0, definition.index).split('\n').length;
         }
     }
+}
+
+function findFunctionDefinition(source: string, name: string): { index: number; bodyStart: number } | null {
+    const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\([^;{}]*\\)\\s*(?:const\\s*)?\\{`, 'g');
+    const match = pattern.exec(source);
+    return match ? { index: match.index, bodyStart: match.index + match[0].lastIndexOf('{') } : null;
 }
 
 /**
@@ -173,6 +175,13 @@ function buildCallGraph(
         }
     };
 
+    // Prefer call relationships supplied by the analyzer when available.
+    for (const fn of functions) {
+        for (const callee of fn.callees ?? []) {
+            if (fnMap.has(callee)) { addEdge(fn.name, callee, fn.name === callee); }
+        }
+    }
+
     // If source code is present, detect direct calls between known functions
     if (sourceCode && functions.length > 0) {
         const functionNames = functions.map(f => f.name);
@@ -191,38 +200,22 @@ function buildCallGraph(
         }
     }
 
-    // Fallback: If no edges found from source code, deduce from stack relationships
-    if (edges.length === 0 && functions.length > 1) {
-        // Sort descending by maxStack
-        const sorted = [...functions].sort((a, b) => b.maxStack - a.maxStack);
-        for (let i = 0; i < sorted.length - 1; i++) {
-            const caller = sorted[i];
-            const next = sorted[i + 1];
-            // If caller's maxStack is greater than next's maxStack, and difference matches or exceeds caller.localStack
-            if (caller.maxStack > next.maxStack) {
-                addEdge(caller.name, next.name, false);
-            }
-        }
-    }
-
-    // Add self-recursion edges
-    for (const f of functions) {
-        if (f.isRecursive || f.hasInfiniteSelfRecursion) {
-            addEdge(f.name, f.name, true);
-        }
-    }
+    // Stack size alone does not prove a call. Leave unconnected functions separate.
 
     // Build chains (caller -> callee paths)
     const chains: CallChainStep[][] = [];
+    const maxChains = 64;
     const entryPoints = functions.filter(f => !f.callers || f.callers.length === 0);
     const startNodes = entryPoints.length > 0 ? entryPoints : functions.filter(f => f.name === 'main');
     const roots = startNodes.length > 0 ? startNodes : [functions[0]];
 
     for (const root of roots) {
+        if (chains.length >= maxChains) { break; }
         const visited = new Set<string>();
         const currentPath: CallChainStep[] = [];
 
         function traverse(fnName: string, cumulative: number) {
+            if (chains.length >= maxChains) { return; }
             const fn = fnMap.get(fnName);
             const local = fn ? fn.localStack : 0;
             const newCumulative = cumulative + local;
@@ -274,44 +267,18 @@ function buildCallGraph(
     return { nodes, edges, chains };
 }
 
-function extractFunctionSnippet(source: string, fnName: string, startLine?: number): string {
-    const lines = source.split('\n');
-    let idx = (startLine && startLine > 0) ? startLine - 1 : -1;
-
-    if (idx === -1) {
-        const regex = new RegExp(`\\b${escapeRegExp(fnName)}\\s*\\(`, 'm');
-        for (let i = 0; i < lines.length; i++) {
-            if (regex.test(lines[i])) {
-                idx = i;
-                break;
-            }
+function extractFunctionSnippet(source: string, fnName: string, _startLine?: number): string {
+    const definition = findFunctionDefinition(source, fnName);
+    if (!definition) { return ''; }
+    let depth = 0;
+    for (let i = definition.bodyStart; i < source.length; i++) {
+        if (source[i] === '{') { depth++; }
+        if (source[i] === '}') {
+            depth--;
+            if (depth === 0) { return source.slice(definition.bodyStart + 1, i); }
         }
     }
-
-    if (idx === -1) { return ''; }
-
-    // Read until matching braces
-    let openBraces = 0;
-    let started = false;
-    const bodyLines: string[] = [];
-
-    for (let i = idx; i < lines.length && i < idx + 200; i++) {
-        const line = lines[i];
-        bodyLines.push(line);
-        for (const ch of line) {
-            if (ch === '{') {
-                openBraces++;
-                started = true;
-            } else if (ch === '}') {
-                openBraces--;
-            }
-        }
-        if (started && openBraces <= 0) {
-            break;
-        }
-    }
-
-    return bodyLines.join('\n');
+    return '';
 }
 
 function escapeRegExp(str: string): string {

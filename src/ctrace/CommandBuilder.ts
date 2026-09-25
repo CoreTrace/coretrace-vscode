@@ -167,7 +167,7 @@ async function buildWindowsCommand(
     if (detectedDistro) {
         const result = trySmartDistroExecution(ctracePath, inputFilePath, params, detectedDistro, binWsl, inputWsl, compileCommands);
         if (result) {
-            return { command: result, tempFiles };
+            return await writeWslScript(result.script, result.distro, tempFiles);
         }
     }
 
@@ -183,7 +183,7 @@ function trySmartDistroExecution(
     binWsl: { distro: string; internalPath: string } | null,
     inputWsl: { distro: string; internalPath: string } | null,
     compileCommands: boolean
-): string | null {
+): { script: string; distro: string | null } | null {
     try {
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
         // execFileSync avoids spawning a shell (cmd.exe); encoding:'utf16le' is
@@ -235,7 +235,6 @@ function trySmartDistroExecution(
         });
         const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
 
-        const prefix = isDefault ? 'wsl' : `wsl -d "${safeDistroName}"`;
         const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(finalInput)}` : '';
 
         const libDir = getLibDirForBinary(ctracePath);
@@ -247,11 +246,8 @@ function trySmartDistroExecution(
             libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
         }
 
-        const toolsDir = '~/.coretrace/tools';
-        const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
-        const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
-
-        return `${prefix} sh -c "${cdTools}${envExports}${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}"`;
+        const script = `${wslToolEnvironment()}${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}`;
+        return { script, distro: isDefault ? null : safeDistroName };
     } catch {
         return null;
     }
@@ -327,10 +323,20 @@ async function buildFallbackCommand(
     const libDir = getLibDirForBinary(ctracePath);
     const libEnv = libDir ? `export LD_LIBRARY_PATH=${shellEscapeArg(toWslPath(libDir))}:"$LD_LIBRARY_PATH" && ` : '';
 
-    const toolsDir = '~/.coretrace/tools';
-    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
-    const cdTools = `cd ${toolsDir} 2>/dev/null || true; `;
+    const script = `${wslToolEnvironment()}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}`;
+    return await writeWslScript(script, null, tempFiles);
+}
 
-    const command = `wsl sh -c "${cdTools}${envExports}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}"`;
-    return { command, tempFiles };
+function wslToolEnvironment(): string {
+    const toolsDir = '$HOME/.coretrace/tools';
+    return `cd "${toolsDir}" 2>/dev/null || true; export CORETRACE_CPPCHECK_BIN=/opt/homebrew/bin/cppcheck CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+}
+
+async function writeWslScript(script: string, distro: string | null, tempFiles: string[]): Promise<BuiltCommand> {
+    const scriptPath = path.join(os.tmpdir(), `ctrace-run-${Date.now()}-${process.pid}.sh`);
+    await fs.promises.writeFile(scriptPath, script + '\n', 'utf8');
+    tempFiles.push(scriptPath);
+    const wslScriptPath = toWslPath(scriptPath, distro);
+    const distroArg = distro ? ` -d "${distro}"` : '';
+    return { command: `wsl${distroArg} --exec sh "${wslScriptPath}"`, tempFiles };
 }

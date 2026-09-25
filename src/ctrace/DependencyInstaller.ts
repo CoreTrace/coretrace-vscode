@@ -36,13 +36,19 @@ export function execShellCommand(
             if (options.asRoot) {
                 prefixArgs.push('-u', 'root');
             }
-            processArgs = [...prefixArgs, 'sh', '-c', cmd];
+            // wsl.exe rewrites arguments passed to `sh -c`, expanding shell
+            // variables before the script runs. Feed the script through stdin.
+            processArgs = [...prefixArgs, '--exec', 'sh', '-s'];
         } else if (options.asRoot) {
             processName = 'sudo';
             processArgs = ['sh', '-c', cmd];
         }
 
         const child = cp.spawn(processName, processArgs);
+        if (process.platform === 'win32') {
+            child.stdin?.on('error', () => { /* WSL may exit before consuming stdin */ });
+            child.stdin?.end(cmd);
+        }
         let stdout = '';
         let stderr = '';
 
@@ -169,8 +175,11 @@ apt-get update -qq || true
 apt-get install -y -qq cppcheck flawfinder ikos git g++ make cmake python3 curl || true
 
 echo "=== [2/5] Creating CoreTrace tools directory structure... ==="
-USER_HOME=$(eval echo "~$SUDO_USER")
-if [ -z "$USER_HOME" ] || [ "$USER_HOME" = "~" ]; then
+USER_HOME="$CORETRACE_USER_HOME"
+if [ -z "$USER_HOME" ] && [ -n "$SUDO_USER" ]; then
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
+if [ -z "$USER_HOME" ]; then
     USER_HOME="$HOME"
 fi
 TOOLS_DIR="$USER_HOME/.coretrace/tools"
@@ -244,7 +253,9 @@ else
 fi
 
 # Ensure permissions
-chown -R "$SUDO_USER:$SUDO_USER" "$TOOLS_DIR" 2>/dev/null || true
+TOOLS_OWNER="$CORETRACE_USER_NAME"
+if [ -z "$TOOLS_OWNER" ]; then TOOLS_OWNER="$SUDO_USER"; fi
+if [ -n "$TOOLS_OWNER" ]; then chown -R "$TOOLS_OWNER:$TOOLS_OWNER" "$TOOLS_DIR" 2>/dev/null || true; fi
 chmod -R 755 "$TOOLS_DIR" 2>/dev/null || true
 
 echo "=== All CoreTrace dependencies installed and verified successfully! ==="
@@ -270,7 +281,18 @@ export async function installDependencies(
         return false;
     }
 
-    const script = getInstallationScript();
+    let script = getInstallationScript();
+    if (process.platform === 'win32') {
+        const user = await execShellCommand('printf "%s\\n%s\\n" "$HOME" "$(id -un)"', { distro });
+        const [userHome, userName] = user.stdout.trim().split(/\r?\n/).map(value => value.trim());
+        if (user.code !== 0 || !userHome || !userName || !userHome.startsWith('/')) {
+            output.appendLine('[CoreTrace] Could not determine the WSL user home directory.');
+            vscode.window.showErrorMessage('CoreTrace could not determine the WSL user home directory.');
+            return false;
+        }
+        const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+        script = `CORETRACE_USER_HOME=${quote(userHome)}\nCORETRACE_USER_NAME=${quote(userName)}\n${script}`;
+    }
 
     progress.report({ message: 'Installing packages & building analyzers in WSL/Linux...', increment: 20 });
 
