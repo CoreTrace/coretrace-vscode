@@ -4,6 +4,8 @@ import { isUpdatingBinary } from "./ctrace/BinaryUpdater";
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
   private _disposables: vscode.Disposable[] = [];
+  private _ready = false;
+  private _pendingMessages: any[] = [];
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -13,10 +15,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       d?.dispose();
     }
     this._view = undefined;
+    this._ready = false;
   }
 
   public postMessage(msg: any): Thenable<boolean> | undefined {
-    return this._view?.webview.postMessage(msg);
+    if (!this._view || !this._ready) {
+      this._pendingMessages.push(msg);
+      return undefined;
+    }
+    return this._view.webview.postMessage(msg);
   }
 
   public resolveWebviewView(
@@ -25,6 +32,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
+    this._ready = false;
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -36,7 +44,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // ── Active file & binary status tracking ──────────────────────────────
     const postActiveFile = (editor: vscode.TextEditor | undefined) => {
       const name = editor?.document.uri.path.split('/').pop() ?? null;
-      this._view?.webview.postMessage({ type: 'active-file', name });
+      this.postMessage({ type: 'active-file', name });
     };
 
     const syncBinaryStatus = () => {
@@ -47,20 +55,26 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       }
     };
 
-    // Push initial state immediately when the sidebar first resolves
-    postActiveFile(vscode.window.activeTextEditor);
-    syncBinaryStatus();
-
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
     this._disposables.push(activeEditorListener);
-    webviewView.onDidDispose(() => activeEditorListener.dispose());
+    webviewView.onDidDispose(() => {
+      activeEditorListener.dispose();
+      if (this._view === webviewView) {
+        this._view = undefined;
+        this._ready = false;
+      }
+    });
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "webview-ready": {
+          this._ready = true;
           syncBinaryStatus();
           postActiveFile(vscode.window.activeTextEditor);
+          for (const message of this._pendingMessages.splice(0)) {
+            webviewView.webview.postMessage(message);
+          }
           break;
         }
         case "onInfo": {

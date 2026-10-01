@@ -39,11 +39,6 @@ export function activate(context: vscode.ExtensionContext) {
         sidebarProvider.postMessage({ type: 'analysis-downloading', progress: msg });
     });
 
-    // Initialise and pre-fetch the binary in the background on startup
-    ensureBinary(context, output).catch((err) => {
-        output.appendLine('Failed to pre-fetch binary on activation: ' + err);
-    });
-
     const codeLensProvider = new CtraceCodeLensProvider();
     for (const language of ['c', 'cpp', 'objective-c', 'objective-cpp']) {
         context.subscriptions.push(
@@ -79,13 +74,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
         return p;
     }
-
-    // Background check for missing external dependencies
-    checkDependencies().then((depStatus) => {
-        if (!depStatus.allInstalled) {
-            output.appendLine(`[ctrace] Note: Some external analyzers are not configured: ${depStatus.missing.join(', ')}. Run "CoreTrace: Install Analyzers & Dependencies" to set them up.`);
-        }
-    }).catch(() => {});
 
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(

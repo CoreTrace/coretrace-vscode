@@ -14,6 +14,13 @@ suite('DependencyInstaller Test Suite', () => {
         assert.ok(script.includes('/opt/homebrew/bin'), 'Script should configure /opt/homebrew/bin');
         assert.ok(script.includes('.coretrace/tools'), 'Script should configure ~/.coretrace/tools');
         assert.ok(script.includes('--output-format=sarif'), 'Script should handle cppcheck SARIF compatibility');
+        assert.ok(script.includes('GIT_WORK_TREE'), 'Script should sanitize GIT_WORK_TREE');
+        assert.ok(script.includes('GIT_DIR'), 'Script should sanitize GIT_DIR');
+        assert.ok(script.includes('apt-get'), 'Script should support Debian/Ubuntu (apt)');
+        assert.ok(script.includes('dnf'), 'Script should support Fedora/RHEL (dnf)');
+        assert.ok(script.includes('pacman'), 'Script should support Arch Linux (pacman)');
+        assert.ok(script.includes('zypper'), 'Script should support openSUSE (zypper)');
+        assert.ok(script.includes('apk'), 'Script should support Alpine (apk)');
     });
 
     test('checkDependencies returns structured dependency status', async () => {
