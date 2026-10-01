@@ -42,7 +42,14 @@ export function execShellCommand(
             processArgs = ['sh', '-c', cmd];
         }
 
-        const child = cp.spawn(processName, processArgs);
+        const env = { ...process.env };
+        delete env.GIT_DIR;
+        delete env.GIT_WORK_TREE;
+        delete env.GIT_INDEX_FILE;
+        delete env.GIT_OBJECT_DIRECTORY;
+        delete env.GIT_PREFIX;
+
+        const child = cp.spawn(processName, processArgs, { env });
         let stdout = '';
         let stderr = '';
 
@@ -163,10 +170,32 @@ export async function checkDependencies(distro?: string | null): Promise<Depende
 export function getInstallationScript(): string {
     return `
 set -e
-echo "=== [1/5] Installing base packages (apt)... ==="
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq || true
-apt-get install -y -qq cppcheck flawfinder ikos git g++ make cmake python3 curl || true
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
+echo "=== [1/5] Installing base packages... ==="
+if command -v apt-get >/dev/null 2>&1; then
+    echo "Detected Debian/Ubuntu-based distribution (apt)."
+    export DEBIAN_FRONTEND=noninteractive
+    dpkg --configure -a || true
+    apt-get update -qq || true
+    apt-get install -y -qq cppcheck flawfinder ikos git g++ make cmake python3 python3-pip curl || true
+elif command -v dnf >/dev/null 2>&1; then
+    echo "Detected Fedora/RHEL-based distribution (dnf)."
+    dnf install -y -q cppcheck flawfinder gcc-c++ make cmake git python3 python3-pip curl || true
+elif command -v yum >/dev/null 2>&1; then
+    echo "Detected CentOS/RHEL-based distribution (yum)."
+    yum install -y -q cppcheck flawfinder gcc-c++ make cmake git python3 python3-pip curl || true
+elif command -v pacman >/dev/null 2>&1; then
+    echo "Detected Arch Linux-based distribution (pacman)."
+    pacman -Sy --noconfirm --needed cppcheck flawfinder base-devel git cmake python python-pip curl || true
+elif command -v zypper >/dev/null 2>&1; then
+    echo "Detected openSUSE-based distribution (zypper)."
+    zypper --non-interactive install -y cppcheck flawfinder gcc-c++ make cmake git python3 python3-pip curl || true
+elif command -v apk >/dev/null 2>&1; then
+    echo "Detected Alpine Linux (apk)."
+    apk add --no-cache cppcheck flawfinder build-base git cmake python3 py3-pip curl || true
+else
+    echo "Warning: Unrecognized package manager. Please ensure git, g++, make, cmake, python3, and curl are installed."
+fi
 
 echo "=== [2/5] Creating CoreTrace tools directory structure... ==="
 USER_HOME=$(eval echo "~$SUDO_USER")
@@ -182,6 +211,14 @@ mkdir -p /opt/homebrew/bin
 
 echo "=== [3/5] Setting up Flawfinder and Ikos symlinks... ==="
 FLAWFINDER_BIN=$(command -v flawfinder || true)
+if [ -z "$FLAWFINDER_BIN" ]; then
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 install --break-system-packages flawfinder 2>/dev/null || pip3 install flawfinder 2>/dev/null || true
+    elif command -v pip >/dev/null 2>&1; then
+        pip install --break-system-packages flawfinder 2>/dev/null || pip install flawfinder 2>/dev/null || true
+    fi
+    FLAWFINDER_BIN=$(command -v flawfinder || true)
+fi
 if [ -n "$FLAWFINDER_BIN" ]; then
     ln -sf "$FLAWFINDER_BIN" "$TOOLS_DIR/flawfinder/src/flawfinder-build/flawfinder.py"
     echo "Linked flawfinder: $FLAWFINDER_BIN -> $TOOLS_DIR/flawfinder/src/flawfinder-build/flawfinder.py"
@@ -196,9 +233,9 @@ fi
 echo "=== [4/5] Setting up Tscancode... ==="
 if [ ! -f "$TOOLS_DIR/tscancode/src/tscancode/trunk/tscancode" ]; then
     TMP_TSC="/tmp/coretrace-TscanCode"
-    if [ ! -d "$TMP_TSC" ]; then
-        git clone --depth 1 https://github.com/CoreTrace/coretrace-TscanCode.git "$TMP_TSC"
-    fi
+    mkdir -p "$TOOLS_DIR/tscancode/src/tscancode/trunk"
+    rm -rf "$TMP_TSC"
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git clone --depth 1 https://github.com/CoreTrace/coretrace-TscanCode.git "$TMP_TSC"
     cd "$TMP_TSC/trunk"
     NPROC=$(nproc 2>/dev/null || echo 2)
     make -j"$NPROC"
@@ -207,6 +244,8 @@ if [ ! -f "$TOOLS_DIR/tscancode/src/tscancode/trunk/tscancode" ]; then
     cp "$TMP_TSC/trunk/tscancode" /usr/local/bin/tscancode 2>/dev/null || true
     cp -r "$TMP_TSC/trunk/cfg" /usr/local/bin/cfg 2>/dev/null || true
     chmod +x "$TOOLS_DIR/tscancode/src/tscancode/trunk/tscancode"
+    cd /tmp
+    rm -rf "$TMP_TSC"
     echo "Built and configured tscancode successfully."
 else
     echo "Tscancode is already present."
@@ -229,15 +268,16 @@ if [ "$SUPPORTS_SARIF" -eq 1 ]; then
 else
     echo "Cppcheck does not support --output-format=sarif. Building Cppcheck 2.16.0..."
     TMP_CPP="/tmp/cppcheck-src"
-    if [ ! -d "$TMP_CPP" ]; then
-        git clone --depth 1 -b 2.16.0 https://github.com/danmar/cppcheck.git "$TMP_CPP"
-    fi
+    rm -rf "$TMP_CPP"
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git clone --depth 1 -b 2.16.0 https://github.com/danmar/cppcheck.git "$TMP_CPP"
     mkdir -p "$TMP_CPP/build"
     cd "$TMP_CPP/build"
     cmake .. -DCMAKE_BUILD_TYPE=Release
     NPROC=$(nproc 2>/dev/null || echo 2)
     cmake --build . -j"$NPROC"
     cmake --install .
+    cd /tmp
+    rm -rf "$TMP_CPP"
     ln -sf /usr/local/bin/cppcheck /opt/homebrew/bin/cppcheck
     ln -sf /usr/local/bin/cppcheck "$TOOLS_DIR/bin/cppcheck"
     echo "Cppcheck 2.16.0 built and installed to /usr/local/bin/cppcheck."
@@ -280,7 +320,7 @@ export async function installDependencies(
         onData: (chunk) => {
             output.append(chunk);
             if (chunk.includes('[1/5]')) {
-                progress.report({ message: 'Installing system packages (apt)...', increment: 15 });
+                progress.report({ message: 'Installing system packages...', increment: 15 });
             } else if (chunk.includes('[2/5]')) {
                 progress.report({ message: 'Creating directory structure...', increment: 10 });
             } else if (chunk.includes('[3/5]')) {
