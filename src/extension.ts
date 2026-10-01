@@ -81,6 +81,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Check dependencies and locate the binary when an analysis is requested.
 
+
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.installDependencies', async () => {

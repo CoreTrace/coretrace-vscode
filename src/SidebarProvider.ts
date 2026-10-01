@@ -17,6 +17,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       d?.dispose();
     }
     this._view = undefined;
+    this._ready = false;
   }
 
   public postMessage(msg: any): Thenable<boolean> | undefined {
@@ -45,7 +46,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // ── Active file & binary status tracking ──────────────────────────────
     const postActiveFile = (editor: vscode.TextEditor | undefined) => {
       const name = editor?.document.uri.path.split('/').pop() ?? null;
-      this._view?.webview.postMessage({ type: 'active-file', name });
+      this.postMessage({ type: 'active-file', name });
     };
 
     const syncBinaryStatus = () => {
@@ -56,10 +57,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this._view?.webview.postMessage({ type: 'analysis-download-complete' });
       }
     };
-
-    // Push initial state immediately when the sidebar first resolves
-    postActiveFile(vscode.window.activeTextEditor);
-    syncBinaryStatus();
 
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
