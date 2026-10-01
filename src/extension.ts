@@ -564,7 +564,18 @@ function mergeSarifDocs(sarifList: any[]): any {
                 const existingRun = runMap.get(driverName)!;
                 if (Array.isArray(run.results)) {
                     existingRun.results = existingRun.results || [];
-                    existingRun.results.push(...run.results);
+                    const seen = new Set(existingRun.results.map((r: any) => {
+                        const loc = r.locations?.[0]?.physicalLocation;
+                        return `${r.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${r.message?.text || ''}`;
+                    }));
+                    for (const r of run.results) {
+                        const loc = r.locations?.[0]?.physicalLocation;
+                        const key = `${r.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${r.message?.text || ''}`;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            existingRun.results.push(r);
+                        }
+                    }
                 }
             }
         }

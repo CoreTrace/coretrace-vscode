@@ -594,10 +594,18 @@
         if (vulnList) { vulnList.innerHTML = ''; }
 
         findings = [];
+        const seenFindings = new Set();
 
         if (sarif && sarif.runs) {
             sarif.runs.forEach(run => {
-                (run.results || []).forEach(res => findings.push(res));
+                (run.results || []).forEach(res => {
+                    const loc = res.locations && res.locations[0] && res.locations[0].physicalLocation;
+                    const key = `${res.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${res.message?.text || ''}`;
+                    if (!seenFindings.has(key)) {
+                        seenFindings.add(key);
+                        findings.push(res);
+                    }
+                });
             });
         }
 

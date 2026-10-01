@@ -45,7 +45,24 @@ export async function parseSarifOutput(stdout: string, reportFilePath?: string):
             if (!sarif.runs) {
                 sarif.runs = [];
             }
-            sarif.runs.push(...source.runs);
+            for (const sourceRun of source.runs) {
+                if (!sourceRun) { continue; }
+                const driverName = sourceRun.tool?.driver?.name || 'coretrace';
+                const existingRun = sarif.runs.find(r => (r.tool?.driver?.name || 'coretrace') === driverName);
+                if (!existingRun) {
+                    sarif.runs.push(sourceRun);
+                } else {
+                    const existingKeys = new Set((existingRun.results || []).map(resultKey));
+                    for (const res of sourceRun.results || []) {
+                        const key = resultKey(res);
+                        if (!existingKeys.has(key)) {
+                            existingKeys.add(key);
+                            existingRun.results = existingRun.results || [];
+                            existingRun.results.push(res);
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -83,6 +100,16 @@ export function countResults(sarif: any): number {
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
+
+function resultKey(r: any): string {
+    const rule = r.ruleId || '';
+    const msg = r.message?.text || '';
+    const loc = r.locations?.[0]?.physicalLocation;
+    const file = loc?.artifactLocation?.uri || '';
+    const line = loc?.region?.startLine ?? '';
+    const col = loc?.region?.startColumn ?? '';
+    return `${rule}|${file}|${line}|${col}|${msg}`;
+}
 
 /** Remove ANSI/VT escape sequences from text. */
 function stripAnsi(text: string): string {
