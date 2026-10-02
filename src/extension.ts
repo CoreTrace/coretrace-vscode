@@ -15,7 +15,7 @@ import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrac
 import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
-import { parseStackReport } from './ctrace/StackParser';
+import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
 import { FindingsStore } from './ctrace/FindingsStore';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -259,10 +259,14 @@ export function activate(context: vscode.ExtensionContext) {
                 async (progress, token) => {
                     const step = filesToAnalyze.length > 0 ? 100 / filesToAnalyze.length : 100;
                     const allSarif: any[] = [];
+                    const allStackReports: any[] = [];
 
                     // Clear once before the loop so workspace-mode doesn't wipe
                     // previously collected diagnostics on every file.
-                    if (scanWorkspace) { diagnosticCollection.clear(); }
+                    if (scanWorkspace) {
+                        diagnosticCollection.clear();
+                        StackManager.instance.clear();
+                    }
 
                     const configPath = createConfigPath(extensionPath);
                     const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot);
@@ -359,11 +363,15 @@ export function activate(context: vscode.ExtensionContext) {
 
                                 const stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
                                 if (stackReport && stackReport.functions.length > 0) {
-                                    StackManager.instance.updateStackData(stackReport);
-                                    sidebarProvider.postMessage({
-                                        type: 'stack-data',
-                                        data: stackReport,
-                                    });
+                                    allStackReports.push(stackReport);
+                                    const unifiedStack = mergeStackReports(allStackReports);
+                                    if (unifiedStack) {
+                                        StackManager.instance.updateStackData(unifiedStack);
+                                        sidebarProvider.postMessage({
+                                            type: 'stack-data',
+                                            data: unifiedStack,
+                                        });
+                                    }
                                 }
                             } catch (e) {
                                 console.warn('[StackAnalyzer] Error parsing stack data:', e);

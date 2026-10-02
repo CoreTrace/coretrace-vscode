@@ -1420,7 +1420,41 @@ select:focus-visible {
     font-size: 0.68em;
     font-family: var(--vscode-editor-font-family, monospace);
 }
-.stack-graph-toolbar { gap: 8px; margin-bottom: 8px; }
+.stack-graph-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.stack-graph-modes {
+    display: inline-flex;
+    align-items: center;
+    background: var(--coretrace-surface);
+    border: 1px solid var(--coretrace-border);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+}
+.stack-mode-btn {
+    border: none;
+    background: transparent;
+    color: var(--coretrace-muted);
+    font-size: 0.68em;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.stack-mode-btn:hover {
+    color: var(--coretrace-text);
+}
+.stack-mode-btn.active {
+    background: var(--coretrace-red-soft);
+    color: var(--coretrace-red-bright);
+    font-weight: 700;
+}
 .stack-graph-caption {
     color: var(--coretrace-muted);
     font-size: 0.7em;
@@ -1680,6 +1714,30 @@ select:focus-visible {
     background: rgba(16, 185, 129, 0.15);
     color: #34d399;
     border-color: rgba(16, 185, 129, 0.4);
+}
+
+.stack-pill.pill-file {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--coretrace-muted);
+    border-color: rgba(255, 255, 255, 0.1);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.63em;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.stack-pill.pill-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border-color: rgba(245, 158, 11, 0.4);
+}
+
+.stack-fn-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .stack-bar-wrap {

@@ -22,6 +22,9 @@
     const stackGraphContainer = document.getElementById('stack-graph-container');
     const stackGraphInspector = document.getElementById('stack-graph-inspector');
     const stackGraphCount = document.getElementById('stack-graph-count');
+    const stackGraphModeChains = document.getElementById('stack-graph-mode-chains');
+    const stackGraphModeAll = document.getElementById('stack-graph-mode-all');
+    let stackGraphMode = 'chains';
     const stackZoomOut = document.getElementById('stack-zoom-out');
     const stackZoomIn = document.getElementById('stack-zoom-in');
     const stackZoomLabel = document.getElementById('stack-zoom-label');
@@ -243,6 +246,22 @@
     if (tabFindingsBtn) { tabFindingsBtn.addEventListener('click', () => switchResultTab('findings')); }
     if (tabStackBtn) { tabStackBtn.addEventListener('click', () => switchResultTab('stack')); }
     if (stackSearch) { stackSearch.addEventListener('input', renderFilteredStackFunctions); }
+    if (stackGraphModeChains) {
+        stackGraphModeChains.addEventListener('click', () => {
+            stackGraphMode = 'chains';
+            stackGraphModeChains.classList.add('active');
+            stackGraphModeAll?.classList.remove('active');
+            if (currentStackReport) { renderCallGraph(currentStackReport); }
+        });
+    }
+    if (stackGraphModeAll) {
+        stackGraphModeAll.addEventListener('click', () => {
+            stackGraphMode = 'all';
+            stackGraphModeAll.classList.add('active');
+            stackGraphModeChains?.classList.remove('active');
+            if (currentStackReport) { renderCallGraph(currentStackReport); }
+        });
+    }
     if (stackZoomOut) { stackZoomOut.addEventListener('click', () => { graphZoom = Math.max(0.65, Math.round((graphZoom - 0.1) * 100) / 100); applyGraphZoom(); }); }
     if (stackZoomIn) { stackZoomIn.addEventListener('click', () => { graphZoom = Math.min(1.5, Math.round((graphZoom + 0.1) * 100) / 100); applyGraphZoom(); }); }
     if (stackGraphContainer) {
@@ -712,12 +731,35 @@
     function renderCallGraph(report) {
         if (!stackGraphContainer) { return; }
         stackGraphContainer.replaceChildren();
-        const nodes = report.callGraph?.nodes || [];
+        const allNodes = report.callGraph?.nodes || [];
+        const allEdges = report.callGraph?.edges || [];
+
+        const connectedIds = new Set();
+        allEdges.forEach(e => {
+            connectedIds.add(e.from);
+            connectedIds.add(e.to);
+        });
+
+        let nodes = allNodes;
+        if (stackGraphMode === 'chains' && allEdges.length > 0) {
+            const connected = allNodes.filter(n =>
+                connectedIds.has(n.id) || n.isRecursive || n.hasInfiniteSelfRecursion || n.exceedsLimit
+            );
+            if (connected.length > 0) {
+                nodes = connected;
+            }
+        }
+
         const nodeById = new Map(nodes.map(node => [node.id, node]));
-        const edges = (report.callGraph?.edges || []).filter(edge =>
+        const edges = allEdges.filter(edge =>
             nodeById.has(edge.from) && nodeById.has(edge.to));
+
         if (stackGraphCount) {
-            stackGraphCount.textContent = `${nodes.length} functions · ${edges.length} calls`;
+            if (nodes.length < allNodes.length) {
+                stackGraphCount.textContent = `${nodes.length} in graph · ${edges.length} calls (${allNodes.length} total)`;
+            } else {
+                stackGraphCount.textContent = `${nodes.length} functions · ${edges.length} calls`;
+            }
         }
         if (!nodes.length) {
             stackGraphContainer.innerHTML = '<div class="stack-empty-hint">No function data available.</div>';
@@ -934,8 +976,9 @@
         info.className = 'stack-inspector-main';
         const name = document.createElement('strong');
         name.textContent = node.name;
+        const fileBasename = node.file ? node.file.split(/[\\/]/).pop() : '';
         const meta = document.createElement('span');
-        meta.textContent = `${callers} callers · ${callees} calls · ${formatBytes(node.maxStack)} peak`;
+        meta.textContent = `${fileBasename ? `${fileBasename} · ` : ''}${callers} callers · ${callees} calls · ${formatBytes(node.maxStack)} peak`;
         info.append(name, meta);
         stackGraphInspector.appendChild(info);
         if (currentStackReport.functions.some(fn => fn.name === nodeId && fn.file)) {
@@ -956,7 +999,10 @@
 
         const query = stackSearch ? stackSearch.value.trim().toLowerCase() : '';
         const list = (currentStackReport.functions || []).filter(fn => {
-            return !query || fn.name.toLowerCase().includes(query);
+            if (!query) { return true; }
+            if (fn.name.toLowerCase().includes(query)) { return true; }
+            if (fn.file && fn.file.toLowerCase().includes(query)) { return true; }
+            return false;
         });
 
         if (list.length === 0) {
@@ -976,28 +1022,35 @@
             card.id = `stack-fn-${escapeId(fn.name)}`;
 
             const pct = Math.max(4, Math.min(100, Math.round((fn.maxStack / peak) * 100)));
+            const fileBasename = fn.file ? fn.file.split(/[\\/]/).pop() : '';
+            const fileTooltip = fn.file ? `${fn.file}${fn.line ? `:${fn.line}` : ''}` : '';
+            const filePill = fileBasename
+                ? `<span class="stack-pill pill-file" title="${escapeHtml(fileTooltip)}">${escapeHtml(fileBasename)}${fn.line ? `:${fn.line}` : ''}</span>`
+                : '';
 
             card.innerHTML = `
                 <div class="stack-fn-header">
-                    <span class="stack-fn-name">
+                    <span class="stack-fn-name" title="${escapeHtml(fn.name)}">
                         <i data-lucide="code-2"></i>
-                        <span>${escapeHtml(fn.name)}()</span>
+                        <span class="stack-fn-title">${escapeHtml(fn.name)}()</span>
                     </span>
                     <div class="stack-fn-badges">
+                        ${filePill}
                         ${isRec ? '<span class="stack-pill pill-danger">⚠️ Cycle</span>' : '<span class="stack-pill pill-safe">Safe</span>'}
-                        ${fn.hasDynamicAlloca ? '<span class="stack-pill pill-danger">alloca()</span>' : ''}
+                        ${fn.hasDynamicAlloca ? '<span class="stack-pill pill-warning">alloca</span>' : ''}
                     </div>
                 </div>
                 <div class="stack-bar-wrap">
                     <div class="stack-bar-fill ${isRec ? 'fill-danger' : ''}" style="width: ${pct}%"></div>
                 </div>
                 <div class="stack-fn-meta">
-                    <span>Local frame: <strong>${formatBytes(fn.localStack)}</strong></span>
-                    <span>Max stack: <strong>${formatBytes(fn.maxStack)}</strong> (${pct}%)</span>
+                    <span>Local: <strong>${formatBytes(fn.localStack)}</strong></span>
+                    <span>Peak: <strong>${formatBytes(fn.maxStack)}</strong> (${pct}%)</span>
                 </div>
             `;
 
             card.addEventListener('click', () => {
+                highlightStackFunction(fn.name);
                 if (fn.file) {
                     vscode.postMessage({
                         type: 'open-file',
@@ -1015,6 +1068,16 @@
 
     function highlightStackFunction(funcName) {
         if (!funcName) { return; }
+        if (currentStackReport && stackGraphMode === 'chains') {
+            const inChains = currentStackReport.callGraph?.edges?.some(e => e.from === funcName || e.to === funcName);
+            const fnObj = currentStackReport.functions?.find(f => f.name === funcName);
+            if (!inChains && !fnObj?.isRecursive && !fnObj?.exceedsLimit) {
+                stackGraphMode = 'all';
+                stackGraphModeAll?.classList.add('active');
+                stackGraphModeChains?.classList.remove('active');
+                renderCallGraph(currentStackReport);
+            }
+        }
         const graph = stackGraphContainer?.querySelector('.stack-graph');
         if (graph) { selectGraphNode(graph, funcName); }
         const card = document.getElementById(`stack-fn-${escapeId(funcName)}`);

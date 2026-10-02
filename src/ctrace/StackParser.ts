@@ -284,3 +284,63 @@ function extractFunctionSnippet(source: string, fnName: string, _startLine?: num
 function escapeRegExp(str: string): string {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+/**
+ * Merges multiple stack reports (from individual files) into a unified workspace stack report.
+ */
+export function mergeStackReports(reports: StackReport[]): StackReport | null {
+    if (!reports || reports.length === 0) { return null; }
+    if (reports.length === 1) { return reports[0]; }
+
+    const functionMap = new Map<string, StackFunction>();
+    let peakStack = 0;
+    let recursiveCount = 0;
+    let stackLimit = 8388608;
+
+    for (const report of reports) {
+        if (!report) { continue; }
+        if (report.peakStack > peakStack) {
+            peakStack = report.peakStack;
+        }
+        if (typeof report.stackLimit === 'number') {
+            stackLimit = report.stackLimit;
+        }
+        recursiveCount += report.recursiveCount || 0;
+
+        for (const fn of report.functions || []) {
+            const existing = functionMap.get(fn.name);
+            if (!existing) {
+                functionMap.set(fn.name, { ...fn });
+            } else {
+                existing.localStack = Math.max(existing.localStack, fn.localStack);
+                existing.maxStack = Math.max(existing.maxStack, fn.maxStack);
+                existing.isRecursive = existing.isRecursive || fn.isRecursive;
+                existing.hasInfiniteSelfRecursion = existing.hasInfiniteSelfRecursion || fn.hasInfiniteSelfRecursion;
+                existing.hasDynamicAlloca = existing.hasDynamicAlloca || fn.hasDynamicAlloca;
+                existing.exceedsLimit = existing.exceedsLimit || fn.exceedsLimit;
+                if (!existing.file && fn.file) { existing.file = fn.file; }
+                if (!existing.line && fn.line) { existing.line = fn.line; }
+                if (fn.callees?.length) {
+                    existing.callees = Array.from(new Set([...(existing.callees || []), ...fn.callees]));
+                }
+                if (fn.callers?.length) {
+                    existing.callers = Array.from(new Set([...(existing.callers || []), ...fn.callers]));
+                }
+            }
+        }
+    }
+
+    const functions = Array.from(functionMap.values());
+    if (functions.length === 0) { return null; }
+
+    const { nodes, edges, chains } = buildCallGraph(functions);
+
+    return {
+        inputFile: 'workspace',
+        stackLimit,
+        peakStack,
+        recursiveCount,
+        functions,
+        callGraph: { nodes, edges, chains },
+    };
+}

@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { parseStackReport } from '../ctrace/StackParser';
+import { parseStackReport, mergeStackReports } from '../ctrace/StackParser';
 
 suite('StackParser Test Suite', () => {
     test('parses JSON stack analyzer report with functions and stack sizes', () => {
@@ -104,5 +104,36 @@ Function: other_func
         assert.strictEqual(report.functions[0].localStack, 32);
         assert.strictEqual(report.functions[0].maxStack, 64);
         assert.strictEqual(report.functions[0].isRecursive, true);
+    });
+
+    test('merges multiple stack reports across workspace files into unified report', () => {
+        const reportA = parseStackReport(JSON.stringify({
+            meta: { inputFile: '/path/fileA.c' },
+            functions: [
+                { name: 'main', file: '/path/fileA.c', line: 10, localStack: 32, maxStack: 160, callees: ['helperB'] },
+                { name: 'localA', file: '/path/fileA.c', line: 25, localStack: 64, maxStack: 64 }
+            ]
+        }));
+        const reportB = parseStackReport(JSON.stringify({
+            meta: { inputFile: '/path/fileB.c' },
+            functions: [
+                { name: 'helperB', file: '/path/fileB.c', line: 5, localStack: 128, maxStack: 128, isRecursive: false },
+                { name: 'cycleB', file: '/path/fileB.c', line: 40, localStack: 16, maxStack: 32, isRecursive: true }
+            ]
+        }));
+
+        assert.ok(reportA);
+        assert.ok(reportB);
+
+        const merged = mergeStackReports([reportA, reportB]);
+        assert.ok(merged);
+        assert.strictEqual(merged.inputFile, 'workspace');
+        assert.strictEqual(merged.functions.length, 4);
+        assert.strictEqual(merged.peakStack, 160);
+        assert.strictEqual(merged.recursiveCount, 1);
+
+        // Call graph edges should link main -> helperB across files
+        const edges = merged.callGraph?.edges || [];
+        assert.ok(edges.some(e => e.from === 'main' && e.to === 'helperB'));
     });
 });

@@ -462,7 +462,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 <span id="stack-graph-count" class="stack-graph-count">0 links</span>
               </div>
               <div class="stack-graph-toolbar" aria-label="Call graph controls">
-                <span class="stack-graph-caption">Drag to explore</span>
+                <div class="stack-graph-modes" id="stack-graph-modes">
+                  <button id="stack-graph-mode-chains" class="stack-mode-btn active" type="button" title="Show connected call chains">Chains</button>
+                  <button id="stack-graph-mode-all" class="stack-mode-btn" type="button" title="Show all workspace functions">All</button>
+                </div>
                 <div class="stack-graph-zoom">
                   <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
                   <span id="stack-zoom-label">100%</span>
@@ -482,7 +485,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
               <div class="findings-toolbar" style="margin-bottom: 8px;">
                 <label class="search-field" for="stack-search" style="width: 100%;">
                   <i data-lucide="search"></i>
-                  <input id="stack-search" type="search" placeholder="Filter functions by name" autocomplete="off">
+                  <input id="stack-search" type="search" placeholder="Filter functions by name or file..." autocomplete="off">
                 </label>
               </div>
               <ul id="stack-fn-list" class="stack-fn-list"></ul>
