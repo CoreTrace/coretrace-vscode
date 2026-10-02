@@ -26,8 +26,10 @@
     const stackGraphModeAll = document.getElementById('stack-graph-mode-all');
     let stackGraphMode = 'chains';
     const stackZoomOut = document.getElementById('stack-zoom-out');
+    const stackZoomFit = document.getElementById('stack-zoom-fit');
     const stackZoomIn = document.getElementById('stack-zoom-in');
     const stackZoomLabel = document.getElementById('stack-zoom-label');
+    const stackGraphResizer = document.getElementById('stack-graph-resizer');
     const stackFnList = document.getElementById('stack-fn-list');
     const stackSearch = document.getElementById('stack-search');
     let currentStackReport = null;
@@ -262,9 +264,31 @@
             if (currentStackReport) { renderCallGraph(currentStackReport); }
         });
     }
-    if (stackZoomOut) { stackZoomOut.addEventListener('click', () => { graphZoom = Math.max(0.65, Math.round((graphZoom - 0.1) * 100) / 100); applyGraphZoom(); }); }
-    if (stackZoomIn) { stackZoomIn.addEventListener('click', () => { graphZoom = Math.min(1.5, Math.round((graphZoom + 0.1) * 100) / 100); applyGraphZoom(); }); }
+    if (stackZoomOut) { stackZoomOut.addEventListener('click', () => { setZoomAt(graphZoom - 0.15); }); }
+    if (stackZoomIn) { stackZoomIn.addEventListener('click', () => { setZoomAt(graphZoom + 0.15); }); }
+    if (stackZoomFit) { stackZoomFit.addEventListener('click', fitGraphToView); }
+    if (stackZoomLabel) {
+        stackZoomLabel.addEventListener('click', () => { setZoomAt(1.0); });
+        stackZoomLabel.addEventListener('dblclick', fitGraphToView);
+    }
+    const zoomBar = document.querySelector('.stack-graph-zoom');
+    if (zoomBar) {
+        zoomBar.addEventListener('wheel', event => {
+            event.preventDefault();
+            const step = event.deltaY < 0 ? 0.12 : -0.12;
+            setZoomAt(graphZoom + step);
+        }, { passive: false });
+    }
     if (stackGraphContainer) {
+        // Trackpad pinch gesture (ctrlKey) and mouse wheel (Ctrl+wheel, Alt+wheel)
+        stackGraphContainer.addEventListener('wheel', event => {
+            if (event.ctrlKey || event.metaKey || event.altKey) {
+                event.preventDefault();
+                const factor = Math.exp(-event.deltaY * 0.006);
+                setZoomAt(graphZoom * factor, event.clientX, event.clientY);
+            }
+        }, { passive: false });
+
         stackGraphContainer.addEventListener('pointerdown', event => {
             if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('.stack-graph-node')) { return; }
             graphPan = { x: event.clientX, y: event.clientY,
@@ -281,6 +305,53 @@
         stackGraphContainer.addEventListener('pointerup', stopGraphPan);
         stackGraphContainer.addEventListener('pointercancel', stopGraphPan);
     }
+
+    if (stackGraphResizer && stackGraphContainer) {
+        let startY = 0;
+        let startHeight = 0;
+
+        stackGraphResizer.addEventListener('pointerdown', event => {
+            if (event.button !== 0) { return; }
+            startY = event.clientY;
+            startHeight = stackGraphContainer.offsetHeight;
+            stackGraphResizer.setPointerCapture(event.pointerId);
+            stackGraphResizer.classList.add('is-resizing');
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'ns-resize';
+        });
+
+        stackGraphResizer.addEventListener('pointermove', event => {
+            if (!stackGraphResizer.classList.contains('is-resizing')) { return; }
+            const deltaY = event.clientY - startY;
+            const maxH = Math.max(400, window.innerHeight * 0.85);
+            const newHeight = Math.max(160, Math.min(maxH, startHeight + deltaY));
+            stackGraphContainer.style.height = `${Math.round(newHeight)}px`;
+        });
+
+        const stopResize = () => {
+            if (stackGraphResizer.classList.contains('is-resizing')) {
+                stackGraphResizer.classList.remove('is-resizing');
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+            }
+        };
+
+        stackGraphResizer.addEventListener('pointerup', stopResize);
+        stackGraphResizer.addEventListener('pointercancel', stopResize);
+
+        stackGraphResizer.addEventListener('dblclick', () => {
+            const h = stackGraphContainer.offsetHeight;
+            if (h > 380) {
+                stackGraphContainer.style.height = '260px';
+            } else {
+                stackGraphContainer.style.height = '520px';
+            }
+        });
+    }
+
+    window.addEventListener('resize', () => {
+        applyGraphZoom();
+    });
 
     const smtEnabled = document.getElementById('smt-enabled');
     const smtControls = ['smt-backend', 'smt-secondary-backend', 'smt-mode', 'smt-timeout-ms', 'smt-rules']
@@ -939,15 +1010,60 @@
         }
     }
 
+    function setZoomAt(newZoom, clientX, clientY) {
+        const clamped = Math.max(0.25, Math.min(3.0, newZoom));
+        if (Math.abs(clamped - graphZoom) < 0.001) { return; }
+
+        const svg = stackGraphContainer?.querySelector('.stack-graph');
+        if (!svg || !stackGraphContainer) {
+            graphZoom = clamped;
+            applyGraphZoom();
+            return;
+        }
+
+        if (clientX !== undefined && clientY !== undefined) {
+            const rect = stackGraphContainer.getBoundingClientRect();
+            const cursorX = clientX - rect.left;
+            const cursorY = clientY - rect.top;
+
+            const contentX = (stackGraphContainer.scrollLeft + cursorX) / graphZoom;
+            const contentY = (stackGraphContainer.scrollTop + cursorY) / graphZoom;
+
+            graphZoom = Math.round(clamped * 1000) / 1000;
+            applyGraphZoom();
+
+            stackGraphContainer.scrollLeft = contentX * graphZoom - cursorX;
+            stackGraphContainer.scrollTop = contentY * graphZoom - cursorY;
+        } else {
+            graphZoom = Math.round(clamped * 1000) / 1000;
+            applyGraphZoom();
+        }
+    }
+
+    function fitGraphToView() {
+        const svg = stackGraphContainer?.querySelector('.stack-graph');
+        if (!svg || !stackGraphContainer) { return; }
+        const baseWidth = Number(svg.dataset.baseWidth) || 500;
+        const availableWidth = stackGraphContainer.clientWidth - 28;
+        if (availableWidth > 60 && baseWidth > 0) {
+            const targetZoom = Math.max(0.25, Math.min(1.5, availableWidth / baseWidth));
+            setZoomAt(targetZoom);
+            stackGraphContainer.scrollLeft = 0;
+            stackGraphContainer.scrollTop = 0;
+        }
+    }
+
     function applyGraphZoom() {
         const svg = stackGraphContainer?.querySelector('.stack-graph');
         if (svg) {
-            svg.setAttribute('width', Math.round(Number(svg.dataset.baseWidth) * graphZoom));
-            svg.setAttribute('height', Math.round(Number(svg.dataset.baseHeight) * graphZoom));
+            const baseW = Number(svg.dataset.baseWidth) || 500;
+            const baseH = Number(svg.dataset.baseHeight) || 300;
+            svg.setAttribute('width', Math.round(baseW * graphZoom));
+            svg.setAttribute('height', Math.round(baseH * graphZoom));
         }
         if (stackZoomLabel) { stackZoomLabel.textContent = `${Math.round(graphZoom * 100)}%`; }
-        if (stackZoomOut) { stackZoomOut.disabled = graphZoom <= 0.65; }
-        if (stackZoomIn) { stackZoomIn.disabled = graphZoom >= 1.5; }
+        if (stackZoomOut) { stackZoomOut.disabled = graphZoom <= 0.25; }
+        if (stackZoomIn) { stackZoomIn.disabled = graphZoom >= 3.0; }
     }
 
     function selectGraphNode(svg, nodeId, scroll = true) {

@@ -468,12 +468,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 </div>
                 <div class="stack-graph-zoom">
                   <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
-                  <span id="stack-zoom-label">100%</span>
+                  <button id="stack-zoom-fit" type="button" aria-label="Fit to view" title="Adapter à la vue"><i data-lucide="scan"></i></button>
+                  <span id="stack-zoom-label" title="Cliquer pour réinitialiser (100%), double-clic pour adapter">100%</span>
                   <button id="stack-zoom-in" type="button" aria-label="Zoom in" title="Zoom in"><i data-lucide="plus"></i></button>
                 </div>
               </div>
               <div id="stack-graph-container" class="stack-graph-container" aria-label="Function call graph">
                 <div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>
+              </div>
+              <div class="stack-graph-resizer" id="stack-graph-resizer" title="Glisser pour agrandir la hauteur (Double-clic pour basculer)">
+                <div class="resizer-handle"></div>
               </div>
               <div id="stack-graph-inspector" class="stack-graph-inspector" hidden></div>
               <div class="stack-graph-legend"><span><i class="legend-link"></i>Call</span><span><i class="legend-cycle"></i>Recursion</span><span>Click a node to inspect</span></div>
