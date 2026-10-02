@@ -369,6 +369,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 console.warn('[StackAnalyzer] Error parsing stack data:', e);
                             }
                             if (sarif) {
+                                normalizeSarifArtifactUris(sarif, fp);
                                 allSarif.push(sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace);
                             } else if (!scanWorkspace) {
@@ -582,6 +583,30 @@ function mergeSarifDocs(sarifList: any[]): any {
     }
 
     return merged;
+}
+
+function normalizeSarifArtifactUris(sarif: any, analysedFilePath: string): void {
+    if (!sarif || !Array.isArray(sarif.runs)) { return; }
+    for (const run of sarif.runs) {
+        if (!run || !Array.isArray(run.results)) { continue; }
+        for (const result of run.results) {
+            for (const loc of result.locations || []) {
+                const art = loc?.physicalLocation?.artifactLocation;
+                if (art && typeof art.uri === 'string') {
+                    const uri = art.uri.replace(/\\/g, '/');
+                    if (
+                        uri.includes('/tmp/ikos') ||
+                        uri.endsWith('.bc') ||
+                        uri.endsWith('.ll') ||
+                        uri.endsWith('.o') ||
+                        (!fs.existsSync(art.uri) && uri.startsWith('/tmp/'))
+                    ) {
+                        art.uri = analysedFilePath;
+                    }
+                }
+            }
+        }
+    }
 }
 
 function tryDelete(filePath: string): Promise<void> {

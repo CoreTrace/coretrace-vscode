@@ -543,6 +543,11 @@ async function resolveReportedFileUri(reportedPath: unknown): Promise<vscode.Uri
   if (active && active.path.split('/').pop()?.toLowerCase() === segments[segments.length - 1]?.toLowerCase()) {
     return active;
   }
+  // Fallback: If reported path is a temporary or compiler intermediate artifact (e.g. /tmp/ikos-*/my.bc),
+  // open the current active document in the editor.
+  if (active && (normalized.includes('/tmp/ikos') || normalized.endsWith('.bc') || normalized.endsWith('.ll') || normalized.endsWith('.o'))) {
+    return active;
+  }
   return null;
 }
 
