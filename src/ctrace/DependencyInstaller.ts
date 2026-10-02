@@ -112,12 +112,29 @@ export async function checkDependencies(distro?: string | null): Promise<Depende
         IKOS_OK=0
         TSCANCODE_OK=0
 
+        check_cppcheck_sarif() {
+            local bin="$1"
+            [ -n "$bin" ] && [ -x "$bin" ] || return 1
+            if "$bin" --output-format=sarif /dev/null >/dev/null 2>&1; then
+                return 0
+            fi
+            local ver=$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$ver" ]; then
+                local major=$(echo "$ver" | cut -d. -f1)
+                local minor=$(echo "$ver" | cut -d. -f2)
+                [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; } && return 0
+            fi
+            return 1
+        }
+
         if has_cmd cppcheck; then CPPCHECK_SYS=1; fi
         if has_file /opt/homebrew/bin/cppcheck; then
             CPPCHECK_BREW=1
-            if /opt/homebrew/bin/cppcheck --output-format=sarif --version >/dev/null 2>&1; then
+            if check_cppcheck_sarif /opt/homebrew/bin/cppcheck; then
                 CPPCHECK_SARIF=1
             fi
+        elif check_cppcheck_sarif "$(command -v cppcheck 2>/dev/null)"; then
+            CPPCHECK_SARIF=1
         fi
 
         if has_file "$HOME/.coretrace/tools/flawfinder/src/flawfinder-build/flawfinder.py" || has_cmd flawfinder; then
@@ -261,13 +278,26 @@ else
 fi
 
 echo "=== [5/5] Setting up Cppcheck and /opt/homebrew/bin/cppcheck... ==="
-# Check if /usr/local/bin/cppcheck or cppcheck supports --output-format=sarif
+check_cppcheck_sarif() {
+    local bin="$1"
+    [ -n "$bin" ] && [ -x "$bin" ] || return 1
+    if "$bin" --output-format=sarif /dev/null >/dev/null 2>&1; then
+        return 0
+    fi
+    local ver=$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$ver" ]; then
+        local major=$(echo "$ver" | cut -d. -f1)
+        local minor=$(echo "$ver" | cut -d. -f2)
+        [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; } && return 0
+    fi
+    return 1
+}
+
+# Check if /usr/local/bin/cppcheck or cppcheck supports --output-format=sarif (Cppcheck >= 2.14)
 CPPCHECK_BIN=$(command -v /usr/local/bin/cppcheck || command -v cppcheck || true)
 SUPPORTS_SARIF=0
-if [ -n "$CPPCHECK_BIN" ]; then
-    if "$CPPCHECK_BIN" --output-format=sarif --version >/dev/null 2>&1; then
-        SUPPORTS_SARIF=1
-    fi
+if check_cppcheck_sarif "$CPPCHECK_BIN"; then
+    SUPPORTS_SARIF=1
 fi
 
 if [ "$SUPPORTS_SARIF" -eq 1 ]; then
