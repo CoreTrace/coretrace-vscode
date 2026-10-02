@@ -1511,19 +1511,22 @@ select:focus-visible {
     box-shadow: inset 0 1px 10px rgba(0, 0, 0, 0.15);
     scrollbar-color: var(--coretrace-border) transparent;
     cursor: grab;
+    outline: none !important;
 }
 .stack-graph-container.is-panning { cursor: grabbing; }
-.stack-graph { display: block; font-family: var(--vscode-editor-font-family, monospace); }
+.stack-graph {
+    display: block;
+    font-family: var(--vscode-editor-font-family, monospace);
+    outline: none !important;
+    user-select: none;
+}
 .stack-wire-start { stop-color: var(--coretrace-muted); stop-opacity: 0.28; }
 .stack-wire-end { stop-color: var(--coretrace-red-bright); stop-opacity: 0.85; }
 .stack-node-top { stop-color: var(--coretrace-surface-raised); }
 .stack-node-bottom { stop-color: var(--coretrace-surface); }
 .stack-graph-wire { transition: opacity 0.18s ease; }
 .stack-graph-wire .wire-glow {
-    fill: none;
-    stroke: var(--coretrace-red-bright);
-    stroke-width: 9;
-    opacity: 0.08;
+    display: none;
 }
 .stack-graph-wire .wire-line {
     fill: none;
@@ -1538,22 +1541,32 @@ select:focus-visible {
 }
 .stack-graph-wire.recursive .wire-line { stroke: var(--coretrace-red-bright); stroke-dasharray: 5 4; }
 .stack-graph-wire.is-selected .wire-line { stroke-width: 2.8; }
-.stack-graph-wire.is-selected .wire-glow { opacity: 0.22; }
+.stack-graph-wire.is-selected .wire-glow { display: none; }
 .stack-graph-wire.is-dimmed { opacity: 0.13; }
-.stack-graph-node { cursor: pointer; transition: opacity 0.18s ease; }
+.stack-graph-node {
+    cursor: pointer;
+    transition: opacity 0.18s ease;
+    outline: none !important;
+    -webkit-tap-highlight-color: transparent;
+}
+.stack-graph-node:focus,
+.stack-graph-node:focus-visible,
+.stack-graph-node:active {
+    outline: none !important;
+}
 .stack-graph-node.is-dimmed { opacity: 0.34; }
 .stack-graph-node .node-shell {
     fill: url(#stack-node-gradient);
     stroke: var(--coretrace-border);
     stroke-width: 1.4;
-    filter: drop-shadow(0 5px 7px rgba(0, 0, 0, 0.24));
+    filter: none;
 }
 .stack-graph-node:hover .node-shell,
 .stack-graph-node:focus-visible .node-shell,
 .stack-graph-node.is-selected .node-shell {
     stroke: var(--coretrace-red-bright);
     stroke-width: 2;
-    filter: drop-shadow(0 0 9px var(--coretrace-red-glow));
+    filter: none;
 }
 .stack-graph-node .node-accent { fill: var(--coretrace-muted); opacity: 0.45; }
 .stack-graph-node:hover .node-accent,
@@ -1631,6 +1644,13 @@ select:focus-visible {
     gap: 6px;
 }
 
+#panel-stack,
+#panel-stack *:focus:not(input),
+#panel-stack *:focus-visible:not(input) {
+    outline: none !important;
+    -webkit-tap-highlight-color: transparent;
+}
+
 .stack-fn-card {
     padding: 8px 10px;
     background: var(--coretrace-surface);
@@ -1638,12 +1658,21 @@ select:focus-visible {
     border-radius: 6px;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    outline: none !important;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
 }
 
 .stack-fn-card:hover {
     background: var(--coretrace-surface-raised);
     border-color: rgba(227, 38, 54, 0.5);
     transform: translateX(2px);
+}
+
+.stack-fn-card:focus,
+.stack-fn-card:focus-visible,
+.stack-fn-card:active {
+    outline: none !important;
 }
 
 .stack-fn-card.is-recursive {
@@ -1656,7 +1685,8 @@ select:focus-visible {
 
 .stack-fn-card.is-focused {
     border-color: var(--coretrace-red-bright);
-    box-shadow: 0 0 10px var(--coretrace-red-glow);
+    background: var(--coretrace-surface-raised);
+    box-shadow: none;
 }
 
 .stack-fn-header {
