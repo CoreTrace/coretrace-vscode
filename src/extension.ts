@@ -329,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
                             output.appendLine(`[exit ${exitCode ?? 0}]`);
 
                             const combined = (stdout || '') + (stderr || '');
-                            if (/can't open file|No such file or directory|\/opt\/homebrew\/bin\/cppcheck/i.test(combined)) {
+                            if (/(?:command not found|unrecognized command line option|cannot execute binary file|execvp: No such file or directory|can't open file '.*(?:flawfinder|ikos|tscancode|cppcheck).*':\s*\[Errno 2\] No such file or directory|\/opt\/homebrew\/bin\/cppcheck:\s*(?:No such file or directory|not found))/i.test(combined)) {
                                 hadToolExecutionWarning = true;
                                 output.appendLine('[ctrace warning] Note: one or more static analysis tools (e.g. cppcheck/flawfinder/ikos/tscancode) could not be executed by ctrace.');
                             }
