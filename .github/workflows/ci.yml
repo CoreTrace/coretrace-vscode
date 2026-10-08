@@ -37,7 +37,7 @@ jobs:
 
       - name: Run tests (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm test
+        run: xvfb-run -a --server-args="-screen 0 1024x768x24" npm test
 
       - name: Run tests (Windows/macOS)
         if: runner.os != 'Linux'
