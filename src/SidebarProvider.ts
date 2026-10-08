@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { isUpdatingBinary } from "./ctrace/BinaryUpdater";
+import { StackManager } from "./ctrace/StackManager";
+import { FindingsStore } from "./ctrace/FindingsStore";
 
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
@@ -7,7 +9,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private _ready = false;
   private _pendingMessages: any[] = [];
 
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(private readonly _extensionUri: vscode.Uri, private readonly _findingsStore: FindingsStore) {}
 
   public dispose(): void {
     while (this._disposables.length) {
@@ -48,6 +50,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
 
     const syncBinaryStatus = () => {
+      // Reflect only an active download; startup leaves the button ready.
       if (isUpdatingBinary()) {
         this._view?.webview.postMessage({ type: 'analysis-downloading', progress: 'In progress…' });
       } else {
@@ -72,6 +75,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           this._ready = true;
           syncBinaryStatus();
           postActiveFile(vscode.window.activeTextEditor);
+          const savedFindings = this._findingsStore.get();
+          if (savedFindings && !this._pendingMessages.some(message => message.type === "analysis-result" || message.type === "clear-results")) {
+            webviewView.webview.postMessage({ type: "analysis-result", data: savedFindings.report, restored: true, savedAt: savedFindings.savedAt });
+          }
+          const latestStack = StackManager.instance.getLatestReport();
+          if (latestStack && !this._pendingMessages.some(message => message.type === "stack-data")) {
+            webviewView.webview.postMessage({ type: "stack-data", data: latestStack });
+          }
           for (const message of this._pendingMessages.splice(0)) {
             webviewView.webview.postMessage(message);
           }
@@ -92,8 +103,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "execute-command": {
-            // Only allow explicitly whitelisted commands to prevent arbitrary command execution
-            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
@@ -118,51 +128,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "open-file": {
-             // Open file at specific line
-             // Handle hybrid paths: If path starts with /mnt/c/, convert to C:/...
-             // OR: Just fallback to the currently active editor if the filename matches!
-             let filePathToOpen = data.path;
-
-             try {
-                // Heuristic: If we are in Windows context but path is WSL /mnt style
-                if (filePathToOpen.startsWith('/mnt/')) {
-                    // Quick map: /mnt/c/ -> c:/
-                     filePathToOpen = filePathToOpen.replace(/^\/mnt\/([a-z])\//, (match:string, drive:string) => {
-                         return `${drive.toUpperCase()}:/`;
-                     });
-                } else if (filePathToOpen.startsWith('\\mnt\\')) {
-                      filePathToOpen = filePathToOpen.replace(/^\\mnt\\([a-z])\\/, (match:string, drive:string) => {
-                         return `${drive.toUpperCase()}:/`;
-                     });
-                }
-                
-                // If it's still weird or nonexistent, and the user has a file open, use that if basename matches
-                const active = vscode.window.activeTextEditor;
-                if (active) {
-                     const activeBasename = active.document.fileName.split(/[\\/]/).pop();
-                     const targetBasename = filePathToOpen.split(/[\\/]/).pop();
-                     if (activeBasename === targetBasename) {
-                         filePathToOpen = active.document.uri.fsPath;
-                     }
-                }
-
-                const openUri = vscode.Uri.file(filePathToOpen);
-                
-                // Use showTextDocument directly with the active doc if it matches, to avoid reload flicker
-                const doc = await vscode.workspace.openTextDocument(openUri);
-                const editor = await vscode.window.showTextDocument(doc);
-                
-                // Add minor delay or ensure range valid
-                const safeLine = Math.max(0, data.line); 
-                const range = new vscode.Range(safeLine, 0, safeLine, 0);
-                
-                editor.selection = new vscode.Selection(range.start, range.end);
-                editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-
-             } catch(e) {
-                 vscode.window.showErrorMessage(`Failed to open file: ${e}`);
-             }
-             break;
+          try {
+            const openUri = await resolveReportedFileUri(data.path);
+            if (!openUri) {
+              vscode.window.showErrorMessage(`Could not find source file in this workspace: ${data.path}`);
+              break;
+            }
+            const doc = await vscode.workspace.openTextDocument(openUri);
+            const editor = await vscode.window.showTextDocument(doc);
+            const safeLine = Number.isFinite(data.line) ? Math.max(0, Math.floor(data.line)) : 0;
+            const line = Math.min(safeLine, Math.max(0, doc.lineCount - 1));
+            const range = new vscode.Range(line, 0, line, 0);
+            editor.selection = new vscode.Selection(range.start, range.end);
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+          } catch (e) {
+            vscode.window.showErrorMessage(`Failed to open file: ${e}`);
+          }
+          break;
         }
       }
     });
@@ -418,32 +400,101 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
 					<!-- Results -->
 					<div id="results-container" class="results-hidden">
-						<div class="results-header">
-							<div class="results-title">
-								<i data-lucide="bug"></i>
-								<span>Vulnerabilities</span>
-							</div>
-							<span class="badge" id="vuln-count">0</span>
-						</div>
-            <div class="findings-summary" id="findings-summary" aria-label="Finding summary">
-              <span class="summary-item"><strong id="summary-errors">0</strong><small>Errors</small></span>
-              <span class="summary-item"><strong id="summary-warnings">0</strong><small>Warnings</small></span>
-              <span class="summary-item"><strong id="summary-notes">0</strong><small>Info</small></span>
+
+            <!-- Result View Tabs -->
+            <div class="results-tab-bar" role="tablist" aria-label="Analysis Results Tabs">
+              <button class="results-tab active" id="tab-findings-btn" type="button" role="tab" aria-selected="true" aria-controls="panel-findings">
+                <i data-lucide="shield-alert"></i>
+                <span>Findings</span>
+                <span class="tab-badge" id="tab-vuln-badge">0</span>
+              </button>
+              <button class="results-tab" id="tab-stack-btn" type="button" role="tab" aria-selected="false" aria-controls="panel-stack">
+                <i data-lucide="layers"></i>
+                <span>Stack Tree</span>
+                <span class="tab-badge stack-tab-badge" id="tab-stack-badge">0</span>
+              </button>
             </div>
-            <div class="findings-toolbar">
-              <label class="search-field" for="findings-search">
-                <i data-lucide="search"></i>
-                <input id="findings-search" type="search" placeholder="Search findings" autocomplete="off">
-              </label>
-              <select id="severity-filter" aria-label="Filter findings by severity">
-                <option value="all">All severities</option>
-                <option value="error">Errors</option>
-                <option value="warning">Warnings</option>
-                <option value="note">Info</option>
-              </select>
+
+            <!-- Panel 1: Findings (Vulnerabilities) -->
+            <div id="panel-findings" class="tab-panel active" role="tabpanel">
+              <div class="findings-summary" id="findings-summary" aria-label="Finding summary">
+                <span class="summary-item"><strong id="summary-errors">0</strong><small>Errors</small></span>
+                <span class="summary-item"><strong id="summary-warnings">0</strong><small>Warnings</small></span>
+                <span class="summary-item"><strong id="summary-notes">0</strong><small>Info</small></span>
+              </div>
+              <div class="findings-toolbar">
+                <label class="search-field" for="findings-search">
+                  <i data-lucide="search"></i>
+                  <input id="findings-search" type="search" placeholder="Search findings" autocomplete="off">
+                </label>
+                <select id="severity-filter" aria-label="Filter findings by severity">
+                  <option value="all">All severities</option>
+                  <option value="error">Errors</option>
+                  <option value="warning">Warnings</option>
+                  <option value="note">Info</option>
+                </select>
+              </div>
+              <div class="findings-empty" id="findings-empty" hidden>No findings match the current filters.</div>
+              <ul id="vuln-list"></ul>
             </div>
-            <div class="findings-empty" id="findings-empty" hidden>No findings match the current filters.</div>
-						<ul id="vuln-list"></ul>
+
+            <!-- Panel 2: Stack Visualizer (Call Tree & Memory) -->
+            <div id="panel-stack" class="tab-panel" role="tabpanel" hidden>
+              <!-- Metrics Cards -->
+              <div class="stack-metrics-grid">
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-peak-val">0 B</span>
+                  <span class="stack-metric-label">Peak Stack</span>
+                </div>
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-recursion-val">0</span>
+                  <span class="stack-metric-label">Recursion</span>
+                </div>
+                <div class="stack-metric-card">
+                  <span class="stack-metric-val" id="stack-functions-val">0</span>
+                  <span class="stack-metric-label">Functions</span>
+                </div>
+              </div>
+
+              <!-- Connected call graph -->
+              <div class="stack-graph-heading">
+                <div class="stack-section-title"><i data-lucide="workflow"></i><span>Call graph</span></div>
+                <span id="stack-graph-count" class="stack-graph-count">0 links</span>
+              </div>
+              <div class="stack-graph-toolbar" aria-label="Call graph controls">
+                <div class="stack-graph-modes" id="stack-graph-modes">
+                  <button id="stack-graph-mode-chains" class="stack-mode-btn active" type="button" title="Show connected call chains">Chains</button>
+                  <button id="stack-graph-mode-all" class="stack-mode-btn" type="button" title="Show all workspace functions">All</button>
+                </div>
+                <div class="stack-graph-zoom">
+                  <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
+                  <button id="stack-zoom-fit" type="button" aria-label="Fit to view" title="Adapter à la vue"><i data-lucide="scan"></i></button>
+                  <span id="stack-zoom-label" title="Cliquer pour réinitialiser (100%), double-clic pour adapter">100%</span>
+                  <button id="stack-zoom-in" type="button" aria-label="Zoom in" title="Zoom in"><i data-lucide="plus"></i></button>
+                </div>
+              </div>
+              <div id="stack-graph-container" class="stack-graph-container" aria-label="Function call graph">
+                <div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>
+              </div>
+              <div class="stack-graph-resizer" id="stack-graph-resizer" title="Glisser pour agrandir la hauteur (Double-clic pour basculer)">
+                <div class="resizer-handle"></div>
+              </div>
+              <div id="stack-graph-inspector" class="stack-graph-inspector" hidden></div>
+              <div class="stack-graph-legend"><span><i class="legend-link"></i>Call</span><span><i class="legend-cycle"></i>Recursion</span><span>Click a node to inspect</span></div>
+
+              <!-- Functions Hierarchy Section -->
+              <div class="stack-section-title" style="margin-top: 14px;">
+                <i data-lucide="list-tree"></i><span>Function Stack Footprints</span>
+              </div>
+              <div class="findings-toolbar" style="margin-bottom: 8px;">
+                <label class="search-field" for="stack-search" style="width: 100%;">
+                  <i data-lucide="search"></i>
+                  <input id="stack-search" type="search" placeholder="Filter functions by name or file..." autocomplete="off">
+                </label>
+              </div>
+              <ul id="stack-fn-list" class="stack-fn-list"></ul>
+            </div>
+
 					</div>
 
 					<!-- Empty state -->
@@ -465,6 +516,46 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 			</body>
 			</html>`;
   }
+}
+
+async function resolveReportedFileUri(reportedPath: unknown): Promise<vscode.Uri | null> {
+  if (typeof reportedPath !== 'string' || !reportedPath.trim()) { return null; }
+
+  const normalized = reportedPath.replace(/\\/g, '/');
+  const hostPath = process.platform === 'win32'
+    ? normalized.replace(/^\/mnt\/([a-z])\//i, (_match, drive: string) => `${drive.toUpperCase()}:/`)
+    : normalized;
+  const segments = normalized.split('/').filter(Boolean);
+  // Reports can point to a different checkout. Prefer the matching file in
+  // the workspace whose analysis produced the report.
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const rootName = folder.uri.path.split('/').filter(Boolean).pop();
+    if (!rootName) { continue; }
+    const rootIndex = segments.map(part => part.toLowerCase()).lastIndexOf(rootName.toLowerCase());
+    if (rootIndex < 0 || rootIndex === segments.length - 1) { continue; }
+    const candidate = vscode.Uri.joinPath(folder.uri, ...segments.slice(rootIndex + 1));
+    try {
+      await vscode.workspace.fs.stat(candidate);
+      return candidate;
+    } catch { /* Try the next workspace folder. */ }
+  }
+
+  const direct = vscode.Uri.file(hostPath);
+  try {
+    await vscode.workspace.fs.stat(direct);
+    return direct;
+  } catch { /* Try the active document as a final fallback. */ }
+
+  const active = vscode.window.activeTextEditor?.document.uri;
+  if (active && active.path.split('/').pop()?.toLowerCase() === segments[segments.length - 1]?.toLowerCase()) {
+    return active;
+  }
+  // Fallback: If reported path is a temporary or compiler intermediate artifact (e.g. /tmp/ikos-*/my.bc),
+  // open the current active document in the editor.
+  if (active && (normalized.includes('/tmp/ikos') || normalized.endsWith('.bc') || normalized.endsWith('.ll') || normalized.endsWith('.o'))) {
+    return active;
+  }
+  return null;
 }
 
 function getNonce() {

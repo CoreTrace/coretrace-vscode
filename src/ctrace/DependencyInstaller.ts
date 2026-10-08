@@ -36,7 +36,9 @@ export function execShellCommand(
             if (options.asRoot) {
                 prefixArgs.push('-u', 'root');
             }
-            processArgs = [...prefixArgs, 'sh', '-c', cmd];
+            // wsl.exe rewrites arguments passed to `sh -c`, expanding shell
+            // variables before the script runs. Feed the script through stdin.
+            processArgs = [...prefixArgs, '--exec', 'sh', '-s'];
         } else if (options.asRoot) {
             processName = 'sudo';
             processArgs = ['sh', '-c', cmd];
@@ -50,6 +52,10 @@ export function execShellCommand(
         delete env.GIT_PREFIX;
 
         const child = cp.spawn(processName, processArgs, { env });
+        if (process.platform === 'win32') {
+            child.stdin?.on('error', () => { /* WSL may exit before consuming stdin */ });
+            child.stdin?.end(cmd);
+        }
         let stdout = '';
         let stderr = '';
 
@@ -106,12 +112,29 @@ export async function checkDependencies(distro?: string | null): Promise<Depende
         IKOS_OK=0
         TSCANCODE_OK=0
 
+        check_cppcheck_sarif() {
+            local bin="$1"
+            [ -n "$bin" ] && [ -x "$bin" ] || return 1
+            if "$bin" --output-format=sarif /dev/null >/dev/null 2>&1; then
+                return 0
+            fi
+            local ver=$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$ver" ]; then
+                local major=$(echo "$ver" | cut -d. -f1)
+                local minor=$(echo "$ver" | cut -d. -f2)
+                [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; } && return 0
+            fi
+            return 1
+        }
+
         if has_cmd cppcheck; then CPPCHECK_SYS=1; fi
         if has_file /opt/homebrew/bin/cppcheck; then
             CPPCHECK_BREW=1
-            if /opt/homebrew/bin/cppcheck --output-format=sarif --version >/dev/null 2>&1; then
+            if check_cppcheck_sarif /opt/homebrew/bin/cppcheck; then
                 CPPCHECK_SARIF=1
             fi
+        elif check_cppcheck_sarif "$(command -v cppcheck 2>/dev/null)"; then
+            CPPCHECK_SARIF=1
         fi
 
         if has_file "$HOME/.coretrace/tools/flawfinder/src/flawfinder-build/flawfinder.py" || has_cmd flawfinder; then
@@ -198,8 +221,11 @@ else
 fi
 
 echo "=== [2/5] Creating CoreTrace tools directory structure... ==="
-USER_HOME=$(eval echo "~$SUDO_USER")
-if [ -z "$USER_HOME" ] || [ "$USER_HOME" = "~" ]; then
+USER_HOME="$CORETRACE_USER_HOME"
+if [ -z "$USER_HOME" ] && [ -n "$SUDO_USER" ]; then
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+fi
+if [ -z "$USER_HOME" ]; then
     USER_HOME="$HOME"
 fi
 TOOLS_DIR="$USER_HOME/.coretrace/tools"
@@ -252,13 +278,26 @@ else
 fi
 
 echo "=== [5/5] Setting up Cppcheck and /opt/homebrew/bin/cppcheck... ==="
-# Check if /usr/local/bin/cppcheck or cppcheck supports --output-format=sarif
+check_cppcheck_sarif() {
+    local bin="$1"
+    [ -n "$bin" ] && [ -x "$bin" ] || return 1
+    if "$bin" --output-format=sarif /dev/null >/dev/null 2>&1; then
+        return 0
+    fi
+    local ver=$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$ver" ]; then
+        local major=$(echo "$ver" | cut -d. -f1)
+        local minor=$(echo "$ver" | cut -d. -f2)
+        [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; } && return 0
+    fi
+    return 1
+}
+
+# Check if /usr/local/bin/cppcheck or cppcheck supports --output-format=sarif (Cppcheck >= 2.14)
 CPPCHECK_BIN=$(command -v /usr/local/bin/cppcheck || command -v cppcheck || true)
 SUPPORTS_SARIF=0
-if [ -n "$CPPCHECK_BIN" ]; then
-    if "$CPPCHECK_BIN" --output-format=sarif --version >/dev/null 2>&1; then
-        SUPPORTS_SARIF=1
-    fi
+if check_cppcheck_sarif "$CPPCHECK_BIN"; then
+    SUPPORTS_SARIF=1
 fi
 
 if [ "$SUPPORTS_SARIF" -eq 1 ]; then
@@ -284,7 +323,9 @@ else
 fi
 
 # Ensure permissions
-chown -R "$SUDO_USER:$SUDO_USER" "$TOOLS_DIR" 2>/dev/null || true
+TOOLS_OWNER="$CORETRACE_USER_NAME"
+if [ -z "$TOOLS_OWNER" ]; then TOOLS_OWNER="$SUDO_USER"; fi
+if [ -n "$TOOLS_OWNER" ]; then chown -R "$TOOLS_OWNER:$TOOLS_OWNER" "$TOOLS_DIR" 2>/dev/null || true; fi
 chmod -R 755 "$TOOLS_DIR" 2>/dev/null || true
 
 echo "=== All CoreTrace dependencies installed and verified successfully! ==="
@@ -310,7 +351,18 @@ export async function installDependencies(
         return false;
     }
 
-    const script = getInstallationScript();
+    let script = getInstallationScript();
+    if (process.platform === 'win32') {
+        const user = await execShellCommand('printf "%s\\n%s\\n" "$HOME" "$(id -un)"', { distro });
+        const [userHome, userName] = user.stdout.trim().split(/\r?\n/).map(value => value.trim());
+        if (user.code !== 0 || !userHome || !userName || !userHome.startsWith('/')) {
+            output.appendLine('[CoreTrace] Could not determine the WSL user home directory.');
+            vscode.window.showErrorMessage('CoreTrace could not determine the WSL user home directory.');
+            return false;
+        }
+        const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+        script = `CORETRACE_USER_HOME=${quote(userHome)}\nCORETRACE_USER_NAME=${quote(userName)}\n${script}`;
+    }
 
     progress.report({ message: 'Installing packages & building analyzers in WSL/Linux...', increment: 20 });
 

@@ -31,7 +31,8 @@
   "activationEvents": [
     "onView:ctrace-audit-view",
     "onCommand:ctrace.runAnalysis",
-    "onCommand:ctrace.runWorkspaceAnalysis"
+    "onCommand:ctrace.runWorkspaceAnalysis",
+    "onCommand:ctrace.focusStackFunction"
   ],
   "contributes": {
     "viewsContainers": {
@@ -69,6 +70,10 @@
       {
         "command": "ctrace.installDependencies",
         "title": "CoreTrace: Install Analyzers & Dependencies"
+      },
+      {
+        "command": "ctrace.focusStackFunction",
+        "title": "CoreTrace: View Function in Stack Visualizer"
       }
     ]
   },

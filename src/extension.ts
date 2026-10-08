@@ -14,6 +14,9 @@ import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
 import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
+import { StackManager } from './ctrace/StackManager';
+import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
+import { FindingsStore } from './ctrace/FindingsStore';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -22,7 +25,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(output);
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    const sidebarProvider = new SidebarProvider(context.extensionUri);
+    const findingsStore = new FindingsStore(context.workspaceState);
+    const sidebarProvider = new SidebarProvider(context.extensionUri, findingsStore);
     // Register the provider itself as a Disposable so its view-scoped
     // subscriptions are guaranteed to be released on extension deactivation,
     // even if `onDidDispose` is never fired by VS Code.
@@ -74,6 +78,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
         return p;
     }
+
+    // Check dependencies and locate the binary when an analysis is requested.
+
 
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(
@@ -185,6 +192,13 @@ export function activate(context: vscode.ExtensionContext) {
                     sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
                     return;
                 }
+                const ext = path.extname(targetUri.fsPath).toLowerCase();
+                const C_EXTENSIONS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh']);
+                if (targetUri.scheme !== 'file' || !C_EXTENSIONS.has(ext)) {
+                    vscode.window.showWarningMessage('Please open or focus a C/C++ source file (.c, .cpp, .cc, .cxx) to analyse.');
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
                 filesToAnalyze = [targetUri.fsPath];
             }
 
@@ -245,10 +259,14 @@ export function activate(context: vscode.ExtensionContext) {
                 async (progress, token) => {
                     const step = filesToAnalyze.length > 0 ? 100 / filesToAnalyze.length : 100;
                     const allSarif: any[] = [];
+                    const allStackReports: any[] = [];
 
                     // Clear once before the loop so workspace-mode doesn't wipe
                     // previously collected diagnostics on every file.
-                    if (scanWorkspace) { diagnosticCollection.clear(); }
+                    if (scanWorkspace) {
+                        diagnosticCollection.clear();
+                        StackManager.instance.clear();
+                    }
 
                     const configPath = createConfigPath(extensionPath);
                     const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot);
@@ -311,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
                             output.appendLine(`[exit ${exitCode ?? 0}]`);
 
                             const combined = (stdout || '') + (stderr || '');
-                            if (/can't open file|No such file or directory|\/opt\/homebrew\/bin\/cppcheck/i.test(combined)) {
+                            if (/(?:command not found|unrecognized command line option|cannot execute binary file|execvp: No such file or directory|can't open file '.*(?:flawfinder|ikos|tscancode|cppcheck).*':\s*\[Errno 2\] No such file or directory|\/opt\/homebrew\/bin\/cppcheck:\s*(?:No such file or directory|not found))/i.test(combined)) {
                                 hadToolExecutionWarning = true;
                                 output.appendLine('[ctrace warning] Note: one or more static analysis tools (e.g. cppcheck/flawfinder/ikos/tscancode) could not be executed by ctrace.');
                             }
@@ -326,9 +344,40 @@ export function activate(context: vscode.ExtensionContext) {
                                 vscode.window.showWarningMessage(`Analysis of ${fileName} timed out (60s).`);
                             }
 
+                            let reportContent = '';
+                            try {
+                                if (reportPath && fs.existsSync(reportPath)) {
+                                    reportContent = await fs.promises.readFile(reportPath, 'utf8');
+                                }
+                            } catch { /* ignore */ }
+
                             const sarif = await parseSarifOutput(stdout, reportPath);
                             tryDelete(reportPath);
+
+                            // Extract and publish stack analyzer data
+                            try {
+                                let sourceCode: string | undefined;
+                                try {
+                                    sourceCode = await fs.promises.readFile(fp, 'utf8');
+                                } catch { /* ignore */ }
+
+                                const stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
+                                if (stackReport && stackReport.functions.length > 0) {
+                                    allStackReports.push(stackReport);
+                                    const unifiedStack = mergeStackReports(allStackReports);
+                                    if (unifiedStack) {
+                                        StackManager.instance.updateStackData(unifiedStack);
+                                        sidebarProvider.postMessage({
+                                            type: 'stack-data',
+                                            data: unifiedStack,
+                                        });
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('[StackAnalyzer] Error parsing stack data:', e);
+                            }
                             if (sarif) {
+                                normalizeSarifArtifactUris(sarif, fp);
                                 allSarif.push(sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace);
                             } else if (!scanWorkspace) {
@@ -366,6 +415,11 @@ export function activate(context: vscode.ExtensionContext) {
                         const merged = mergeSarifDocs(allSarif);
                         const total = countResults(merged);
 
+                        try {
+                            await findingsStore.save(merged);
+                        } catch (error) {
+                            output.appendLine(`[ctrace] Could not save the latest findings: ${error}`);
+                        }
                         sidebarProvider.postMessage({
                             type: 'analysis-result',
                             data: merged,
@@ -424,9 +478,22 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.clearAnalysisCache', () => {
+        vscode.commands.registerCommand('ctrace.clearAnalysisCache', async () => {
             clearCache();
-            vscode.window.showInformationMessage('Ctrace analysis cache cleared.');
+            StackManager.instance.clear();
+            await findingsStore.clear();
+            sidebarProvider.postMessage({ type: 'clear-results' });
+            vscode.window.showInformationMessage('Ctrace analysis cache and saved results cleared.');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.focusStackFunction', async (functionName?: string) => {
+            await vscode.commands.executeCommand('workbench.view.extension.ctrace-sidebar-view');
+            sidebarProvider.postMessage({
+                type: 'focus-stack-tab',
+                functionName,
+            });
         })
     );
 
@@ -506,13 +573,48 @@ function mergeSarifDocs(sarifList: any[]): any {
                 const existingRun = runMap.get(driverName)!;
                 if (Array.isArray(run.results)) {
                     existingRun.results = existingRun.results || [];
-                    existingRun.results.push(...run.results);
+                    const seen = new Set(existingRun.results.map((r: any) => {
+                        const loc = r.locations?.[0]?.physicalLocation;
+                        return `${r.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${r.message?.text || ''}`;
+                    }));
+                    for (const r of run.results) {
+                        const loc = r.locations?.[0]?.physicalLocation;
+                        const key = `${r.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${r.message?.text || ''}`;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            existingRun.results.push(r);
+                        }
+                    }
                 }
             }
         }
     }
 
     return merged;
+}
+
+function normalizeSarifArtifactUris(sarif: any, analysedFilePath: string): void {
+    if (!sarif || !Array.isArray(sarif.runs)) { return; }
+    for (const run of sarif.runs) {
+        if (!run || !Array.isArray(run.results)) { continue; }
+        for (const result of run.results) {
+            for (const loc of result.locations || []) {
+                const art = loc?.physicalLocation?.artifactLocation;
+                if (art && typeof art.uri === 'string') {
+                    const uri = art.uri.replace(/\\/g, '/');
+                    if (
+                        uri.includes('/tmp/ikos') ||
+                        uri.endsWith('.bc') ||
+                        uri.endsWith('.ll') ||
+                        uri.endsWith('.o') ||
+                        (!fs.existsSync(art.uri) && uri.startsWith('/tmp/'))
+                    ) {
+                        art.uri = analysedFilePath;
+                    }
+                }
+            }
+        }
+    }
 }
 
 function tryDelete(filePath: string): Promise<void> {

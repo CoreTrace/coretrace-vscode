@@ -10,6 +10,32 @@
     const findingsSearch = document.getElementById('findings-search');
     const severityFilter = document.getElementById('severity-filter');
     const findingsEmpty = document.getElementById('findings-empty');
+    const tabFindingsBtn = document.getElementById('tab-findings-btn');
+    const tabStackBtn = document.getElementById('tab-stack-btn');
+    const panelFindings = document.getElementById('panel-findings');
+    const panelStack = document.getElementById('panel-stack');
+    const tabVulnBadge = document.getElementById('tab-vuln-badge');
+    const tabStackBadge = document.getElementById('tab-stack-badge');
+    const stackPeakVal = document.getElementById('stack-peak-val');
+    const stackRecursionVal = document.getElementById('stack-recursion-val');
+    const stackFunctionsVal = document.getElementById('stack-functions-val');
+    const stackGraphContainer = document.getElementById('stack-graph-container');
+    const stackGraphInspector = document.getElementById('stack-graph-inspector');
+    const stackGraphCount = document.getElementById('stack-graph-count');
+    const stackGraphModeChains = document.getElementById('stack-graph-mode-chains');
+    const stackGraphModeAll = document.getElementById('stack-graph-mode-all');
+    let stackGraphMode = 'chains';
+    const stackZoomOut = document.getElementById('stack-zoom-out');
+    const stackZoomFit = document.getElementById('stack-zoom-fit');
+    const stackZoomIn = document.getElementById('stack-zoom-in');
+    const stackZoomLabel = document.getElementById('stack-zoom-label');
+    const stackGraphResizer = document.getElementById('stack-graph-resizer');
+    const stackFnList = document.getElementById('stack-fn-list');
+    const stackSearch = document.getElementById('stack-search');
+    let currentStackReport = null;
+    let graphSelectedId = null;
+    let graphZoom = 0.85;
+    let graphPan = null;
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
     const statusDetail = document.getElementById('status-detail');
@@ -219,6 +245,113 @@
 
     if (findingsSearch) { findingsSearch.addEventListener('input', renderFilteredFindings); }
     if (severityFilter) { severityFilter.addEventListener('change', renderFilteredFindings); }
+    if (tabFindingsBtn) { tabFindingsBtn.addEventListener('click', () => switchResultTab('findings')); }
+    if (tabStackBtn) { tabStackBtn.addEventListener('click', () => switchResultTab('stack')); }
+    if (stackSearch) { stackSearch.addEventListener('input', renderFilteredStackFunctions); }
+    if (stackGraphModeChains) {
+        stackGraphModeChains.addEventListener('click', () => {
+            stackGraphMode = 'chains';
+            stackGraphModeChains.classList.add('active');
+            stackGraphModeAll?.classList.remove('active');
+            if (currentStackReport) { renderCallGraph(currentStackReport); }
+        });
+    }
+    if (stackGraphModeAll) {
+        stackGraphModeAll.addEventListener('click', () => {
+            stackGraphMode = 'all';
+            stackGraphModeAll.classList.add('active');
+            stackGraphModeChains?.classList.remove('active');
+            if (currentStackReport) { renderCallGraph(currentStackReport); }
+        });
+    }
+    if (stackZoomOut) { stackZoomOut.addEventListener('click', () => { setZoomAt(graphZoom - 0.15); }); }
+    if (stackZoomIn) { stackZoomIn.addEventListener('click', () => { setZoomAt(graphZoom + 0.15); }); }
+    if (stackZoomFit) { stackZoomFit.addEventListener('click', fitGraphToView); }
+    if (stackZoomLabel) {
+        stackZoomLabel.addEventListener('click', () => { setZoomAt(1.0); });
+        stackZoomLabel.addEventListener('dblclick', fitGraphToView);
+    }
+    const zoomBar = document.querySelector('.stack-graph-zoom');
+    if (zoomBar) {
+        zoomBar.addEventListener('wheel', event => {
+            event.preventDefault();
+            const step = event.deltaY < 0 ? 0.12 : -0.12;
+            setZoomAt(graphZoom + step);
+        }, { passive: false });
+    }
+    if (stackGraphContainer) {
+        // Trackpad pinch gesture (ctrlKey) and mouse wheel (Ctrl+wheel, Alt+wheel)
+        stackGraphContainer.addEventListener('wheel', event => {
+            if (event.ctrlKey || event.metaKey || event.altKey) {
+                event.preventDefault();
+                const factor = Math.exp(-event.deltaY * 0.006);
+                setZoomAt(graphZoom * factor, event.clientX, event.clientY);
+            }
+        }, { passive: false });
+
+        stackGraphContainer.addEventListener('pointerdown', event => {
+            if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('.stack-graph-node')) { return; }
+            graphPan = { x: event.clientX, y: event.clientY,
+                left: stackGraphContainer.scrollLeft, top: stackGraphContainer.scrollTop };
+            stackGraphContainer.setPointerCapture(event.pointerId);
+            stackGraphContainer.classList.add('is-panning');
+        });
+        stackGraphContainer.addEventListener('pointermove', event => {
+            if (!graphPan) { return; }
+            stackGraphContainer.scrollLeft = graphPan.left - (event.clientX - graphPan.x);
+            stackGraphContainer.scrollTop = graphPan.top - (event.clientY - graphPan.y);
+        });
+        const stopGraphPan = () => { graphPan = null; stackGraphContainer.classList.remove('is-panning'); };
+        stackGraphContainer.addEventListener('pointerup', stopGraphPan);
+        stackGraphContainer.addEventListener('pointercancel', stopGraphPan);
+    }
+
+    if (stackGraphResizer && stackGraphContainer) {
+        let startY = 0;
+        let startHeight = 0;
+
+        stackGraphResizer.addEventListener('pointerdown', event => {
+            if (event.button !== 0) { return; }
+            startY = event.clientY;
+            startHeight = stackGraphContainer.offsetHeight;
+            stackGraphResizer.setPointerCapture(event.pointerId);
+            stackGraphResizer.classList.add('is-resizing');
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'ns-resize';
+        });
+
+        stackGraphResizer.addEventListener('pointermove', event => {
+            if (!stackGraphResizer.classList.contains('is-resizing')) { return; }
+            const deltaY = event.clientY - startY;
+            const maxH = Math.max(400, window.innerHeight * 0.85);
+            const newHeight = Math.max(160, Math.min(maxH, startHeight + deltaY));
+            stackGraphContainer.style.height = `${Math.round(newHeight)}px`;
+        });
+
+        const stopResize = () => {
+            if (stackGraphResizer.classList.contains('is-resizing')) {
+                stackGraphResizer.classList.remove('is-resizing');
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+            }
+        };
+
+        stackGraphResizer.addEventListener('pointerup', stopResize);
+        stackGraphResizer.addEventListener('pointercancel', stopResize);
+
+        stackGraphResizer.addEventListener('dblclick', () => {
+            const h = stackGraphContainer.offsetHeight;
+            if (h > 380) {
+                stackGraphContainer.style.height = '260px';
+            } else {
+                stackGraphContainer.style.height = '520px';
+            }
+        });
+    }
+
+    window.addEventListener('resize', () => {
+        applyGraphZoom();
+    });
 
     const smtEnabled = document.getElementById('smt-enabled');
     const smtControls = ['smt-backend', 'smt-secondary-backend', 'smt-mode', 'smt-timeout-ms', 'smt-rules']
@@ -432,7 +565,10 @@
                 setRunning(true);
                 break;
             case 'analysis-result':
-                handleAnalysisResult(msg.data);
+                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt);
+                break;
+            case 'clear-results':
+                clearDisplayedResults();
                 break;
             case 'analysis-done':
                 setRunning(false);
@@ -457,6 +593,15 @@
                 break;
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
+                break;
+            case 'stack-data':
+                handleStackData(msg.data);
+                break;
+            case 'focus-stack-tab':
+                switchResultTab('stack');
+                if (msg.functionName) {
+                    highlightStackFunction(msg.functionName);
+                }
                 break;
         }
     });
@@ -528,9 +673,10 @@
         }
     }
 
-    function handleAnalysisResult(sarif) {
+    function handleAnalysisResult(sarif, restored = false, savedAt) {
         setRunning(false);
-        setStatus('Analysis complete', 'Findings are shown below', 'success');
+        const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
+        setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
         setProgress(100);
 
         if (emptyState) { emptyState.style.display = 'none'; }
@@ -538,10 +684,18 @@
         if (vulnList) { vulnList.innerHTML = ''; }
 
         findings = [];
+        const seenFindings = new Set();
 
         if (sarif && sarif.runs) {
             sarif.runs.forEach(run => {
-                (run.results || []).forEach(res => findings.push(res));
+                (run.results || []).forEach(res => {
+                    const loc = res.locations && res.locations[0] && res.locations[0].physicalLocation;
+                    const key = `${res.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${res.message?.text || ''}`;
+                    if (!seenFindings.has(key)) {
+                        seenFindings.add(key);
+                        findings.push(res);
+                    }
+                });
             });
         }
 
@@ -558,6 +712,500 @@
             vulnList.innerHTML = '<li class="info-item">No issues detected for the selected scope.</li>';
             if (typeof lucide !== 'undefined') { lucide.createIcons(); }
         }
+
+        if (tabVulnBadge) {
+            tabVulnBadge.textContent = String(count);
+        }
+    }
+
+    function clearDisplayedResults() {
+        findings = [];
+        currentStackReport = null;
+        graphSelectedId = null;
+        if (vulnList) { vulnList.replaceChildren(); }
+        if (stackFnList) { stackFnList.replaceChildren(); }
+        if (stackGraphContainer) {
+            stackGraphContainer.innerHTML = '<div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>';
+        }
+        if (stackGraphInspector) { stackGraphInspector.hidden = true; }
+        if (stackGraphCount) { stackGraphCount.textContent = '0 functions · 0 calls'; }
+        if (vulnCount) { vulnCount.textContent = '0'; vulnCount.classList.add('zero'); }
+        if (tabVulnBadge) { tabVulnBadge.textContent = '0'; }
+        if (tabStackBadge) { tabStackBadge.textContent = '0'; }
+        if (stackPeakVal) { stackPeakVal.textContent = '0 B'; }
+        if (stackRecursionVal) { stackRecursionVal.textContent = '0'; stackRecursionVal.className = 'stack-metric-val'; }
+        if (stackFunctionsVal) { stackFunctionsVal.textContent = '0'; }
+        updateSummary([]);
+        if (resultsContainer) { resultsContainer.classList.add('results-hidden'); }
+        if (emptyState) { emptyState.style.display = ''; }
+        switchResultTab('findings');
+        setProgress(undefined);
+        setStatus('Ready to audit', '', 'ready');
+    }
+
+    function switchResultTab(tabName) {
+        const isFindings = tabName === 'findings';
+        if (tabFindingsBtn) {
+            tabFindingsBtn.classList.toggle('active', isFindings);
+            tabFindingsBtn.setAttribute('aria-selected', isFindings ? 'true' : 'false');
+        }
+        if (tabStackBtn) {
+            tabStackBtn.classList.toggle('active', !isFindings);
+            tabStackBtn.setAttribute('aria-selected', !isFindings ? 'true' : 'false');
+        }
+        if (panelFindings) { panelFindings.hidden = !isFindings; }
+        if (panelStack) { panelStack.hidden = isFindings; }
+
+        if (!isFindings && typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) { return '0 B'; }
+        if (bytes < 1024) { return `${bytes} B`; }
+        if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)} KB`; }
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function handleStackData(report) {
+        if (!report) { return; }
+        currentStackReport = report;
+        graphSelectedId = null;
+
+        if (emptyState) { emptyState.style.display = 'none'; }
+        if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
+
+        const fnCount = (report.functions || []).length;
+        if (tabStackBadge) {
+            tabStackBadge.textContent = String(fnCount);
+        }
+
+        if (stackPeakVal) {
+            stackPeakVal.textContent = formatBytes(report.peakStack);
+        }
+
+        if (stackRecursionVal) {
+            const hasRec = (report.recursiveCount || 0) > 0;
+            stackRecursionVal.textContent = hasRec ? `${report.recursiveCount} Cycle${report.recursiveCount > 1 ? 's' : ''}` : '0 (Safe)';
+            stackRecursionVal.className = `stack-metric-val ${hasRec ? 'metric-danger' : 'metric-safe'}`;
+        }
+
+        if (stackFunctionsVal) {
+            stackFunctionsVal.textContent = String(fnCount);
+        }
+
+        renderCallGraph(report);
+        renderFilteredStackFunctions();
+    }
+
+    function renderCallGraph(report) {
+        if (!stackGraphContainer) { return; }
+        stackGraphContainer.replaceChildren();
+        const allNodes = report.callGraph?.nodes || [];
+        const allEdges = report.callGraph?.edges || [];
+
+        const connectedIds = new Set();
+        allEdges.forEach(e => {
+            connectedIds.add(e.from);
+            connectedIds.add(e.to);
+        });
+
+        let nodes = allNodes;
+        if (stackGraphMode === 'chains' && allEdges.length > 0) {
+            const connected = allNodes.filter(n =>
+                connectedIds.has(n.id) || n.isRecursive || n.hasInfiniteSelfRecursion || n.exceedsLimit
+            );
+            if (connected.length > 0) {
+                nodes = connected;
+            }
+        }
+
+        const nodeById = new Map(nodes.map(node => [node.id, node]));
+        const edges = allEdges.filter(edge =>
+            nodeById.has(edge.from) && nodeById.has(edge.to));
+
+        if (stackGraphCount) {
+            if (nodes.length < allNodes.length) {
+                stackGraphCount.textContent = `${nodes.length} in graph · ${edges.length} calls (${allNodes.length} total)`;
+            } else {
+                stackGraphCount.textContent = `${nodes.length} functions · ${edges.length} calls`;
+            }
+        }
+        if (!nodes.length) {
+            stackGraphContainer.innerHTML = '<div class="stack-empty-hint">No function data available.</div>';
+            if (stackGraphInspector) { stackGraphInspector.hidden = true; }
+            return;
+        }
+
+        const depth = new Map(nodes.map(node => [node.id, 0]));
+        const incoming = new Map(nodes.map(node => [node.id, 0]));
+        const outgoing = new Map(nodes.map(node => [node.id, []]));
+        edges.filter(edge => edge.from !== edge.to).forEach(edge => {
+            incoming.set(edge.to, incoming.get(edge.to) + 1);
+            outgoing.get(edge.from).push(edge.to);
+        });
+        const queue = nodes.filter(node => incoming.get(node.id) === 0)
+            .sort((a, b) => (a.name === 'main' ? -1 : b.name === 'main' ? 1 : a.name.localeCompare(b.name)))
+            .map(node => node.id);
+        const placed = new Set();
+        while (queue.length) {
+            const id = queue.shift();
+            if (placed.has(id)) { continue; }
+            placed.add(id);
+            outgoing.get(id).forEach(target => {
+                depth.set(target, Math.max(depth.get(target), Math.min(depth.get(id) + 1, 9)));
+                incoming.set(target, incoming.get(target) - 1);
+                if (incoming.get(target) === 0) { queue.push(target); }
+            });
+        }
+        edges.filter(edge => placed.has(edge.from) && !placed.has(edge.to)).forEach(edge => {
+            depth.set(edge.to, Math.min(depth.get(edge.from) + 1, 9));
+        });
+
+        const columns = new Map();
+        nodes.forEach(node => {
+            const level = depth.get(node.id);
+            if (!columns.has(level)) { columns.set(level, []); }
+            columns.get(level).push(node);
+        });
+        const levels = [...columns.keys()].sort((a, b) => a - b);
+        levels.forEach(level => columns.get(level).sort((a, b) => {
+            const parents = id => edges.filter(edge => edge.to === id).map(edge => edge.from);
+            const rank = id => {
+                const values = parents(id).map(parent => {
+                    const parentColumn = columns.get(depth.get(parent)) || [];
+                    return parentColumn.findIndex(node => node.id === parent);
+                }).filter(value => value >= 0);
+                return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 999;
+            };
+            return rank(a.id) - rank(b.id) || a.name.localeCompare(b.name);
+        }));
+
+        const nodeWidth = 188;
+        const nodeHeight = 78;
+        const colStep = 280;
+        const rowStep = 122;
+        const maxRows = Math.max(...[...columns.values()].map(column => column.length));
+        const width = 60 + (Math.max(...levels) * colStep) + nodeWidth + 40;
+        const height = Math.max(250, 75 + maxRows * rowStep);
+        const positions = new Map();
+        columns.forEach((column, level) => column.forEach((node, row) => {
+            positions.set(node.id, {
+                x: 36 + level * colStep,
+                y: 36 + (maxRows - column.length) * rowStep / 2 + row * rowStep
+            });
+        }));
+
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.classList.add('stack-graph');
+        svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        svg.setAttribute('role', 'img');
+        svg.setAttribute('aria-label', `${nodes.length} functions connected by ${edges.length} calls`);
+        svg.dataset.baseWidth = String(width);
+        svg.dataset.baseHeight = String(height);
+        const make = (tag, attrs, parent) => {
+            const element = document.createElementNS(ns, tag);
+            Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
+            parent.appendChild(element);
+            return element;
+        };
+        const defs = make('defs', {}, svg);
+        const nodeGradient = make('linearGradient', { id: 'stack-node-gradient', x1: '0%', x2: '0%', y1: '0%', y2: '100%' }, defs);
+        make('stop', { offset: '0%', class: 'stack-node-top' }, nodeGradient);
+        make('stop', { offset: '100%', class: 'stack-node-bottom' }, nodeGradient);
+        const gradient = make('linearGradient', { id: 'stack-wire-gradient', x1: '0%', x2: '100%' }, defs);
+        make('stop', { offset: '0%', class: 'stack-wire-start' }, gradient);
+        make('stop', { offset: '100%', class: 'stack-wire-end' }, gradient);
+        const edgeLayer = make('g', { class: 'stack-graph-edges' }, svg);
+        edges.forEach(edge => {
+            const from = positions.get(edge.from);
+            const to = positions.get(edge.to);
+            const self = edge.from === edge.to;
+            const x1 = from.x + nodeWidth;
+            const y1 = from.y + nodeHeight / 2;
+            const x2 = to.x;
+            const y2 = to.y + nodeHeight / 2;
+            let d;
+            if (self) {
+                d = `M ${from.x + 118} ${from.y} C ${from.x + 118} ${from.y - 40}, ${from.x + 175} ${from.y - 40}, ${from.x + 175} ${from.y}`;
+            } else if (x2 > x1) {
+                const bend = Math.max(36, (x2 - x1) * 0.45);
+                d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+            } else {
+                const rail = height - 26;
+                d = `M ${x1} ${y1} C ${x1 + 48} ${y1}, ${x1 + 48} ${rail}, ${x1} ${rail} L ${x2 - 35} ${rail} C ${x2 - 50} ${rail}, ${x2 - 50} ${y2}, ${x2} ${y2}`;
+            }
+            const wire = make('g', { class: 'stack-graph-wire' }, edgeLayer);
+            wire.dataset.from = edge.from;
+            wire.dataset.to = edge.to;
+            if (edge.isRecursiveCycle || self) { wire.classList.add('recursive'); }
+            make('path', { d, class: 'wire-glow' }, wire);
+            make('path', { d, class: 'wire-line' }, wire);
+            if (!self) { make('circle', { cx: x2, cy: y2, r: 3.4, class: 'wire-terminal' }, wire); }
+        });
+        const nodeLayer = make('g', { class: 'stack-graph-nodes' }, svg);
+        const maxStack = Math.max(1, ...nodes.map(node => node.maxStack || 0));
+        nodes.forEach(node => {
+            const pos = positions.get(node.id);
+            const group = make('g', {
+                class: 'stack-graph-node', transform: `translate(${pos.x} ${pos.y})`,
+                tabindex: 0, role: 'button',
+                'aria-label': `${node.name}, local ${formatBytes(node.localStack)}, peak ${formatBytes(node.maxStack)}`
+            }, nodeLayer);
+            group.dataset.id = node.id;
+            if (node.isRecursive || node.hasInfiniteSelfRecursion) { group.classList.add('recursive'); }
+            if (node.exceedsLimit) { group.classList.add('over-limit'); }
+            make('rect', { x: 0, y: 0, width: nodeWidth, height: nodeHeight, rx: 11, class: 'node-shell' }, group);
+            make('rect', { x: 0, y: 14, width: 3, height: 50, rx: 1.5, class: 'node-accent' }, group);
+            make('rect', { x: 12, y: 12, width: 26, height: 26, rx: 7, class: 'node-icon-box' }, group);
+            const icon = make('text', { x: 25, y: 30, class: 'node-icon', 'text-anchor': 'middle' }, group);
+            icon.textContent = 'ƒ';
+            const title = make('text', { x: 47, y: 29, class: 'node-title' }, group);
+            title.textContent = node.name.length > 20 ? `${node.name.slice(0, 18)}…` : node.name;
+            const tooltip = make('title', {}, group);
+            tooltip.textContent = node.name;
+            const localLabel = make('text', { x: 13, y: 55, class: 'node-meta-label' }, group);
+            localLabel.textContent = 'LOCAL';
+            const localValue = make('text', { x: 55, y: 55, class: 'node-meta-value' }, group);
+            localValue.textContent = formatBytes(node.localStack);
+            const peakLabel = make('text', { x: 112, y: 55, class: 'node-meta-label' }, group);
+            peakLabel.textContent = 'PEAK';
+            const peakValue = make('text', { x: 176, y: 55, class: 'node-meta-value', 'text-anchor': 'end' }, group);
+            peakValue.textContent = formatBytes(node.maxStack);
+            make('rect', { x: 12, y: 68, width: 164, height: 2, rx: 1, class: 'node-bar-track' }, group);
+            make('rect', { x: 12, y: 68, width: Math.max(3, Math.round(164 * (node.maxStack || 0) / maxStack)),
+                height: 2, rx: 1, class: 'node-bar-fill' }, group);
+            make('circle', { cx: 0, cy: nodeHeight / 2, r: 3.5, class: 'node-port' }, group);
+            make('circle', { cx: nodeWidth, cy: nodeHeight / 2, r: 3.5, class: 'node-port' }, group);
+            group.addEventListener('click', () => selectGraphNode(svg, node.id));
+            group.addEventListener('dblclick', () => openGraphFunction(node.name));
+            group.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    selectGraphNode(svg, node.id);
+                }
+            });
+        });
+        stackGraphContainer.appendChild(svg);
+        applyGraphZoom();
+        if (!edges.length) {
+            const hint = document.createElement('div');
+            hint.className = 'stack-graph-empty-links';
+            hint.textContent = 'Call links are not available for this report.';
+            stackGraphContainer.appendChild(hint);
+        }
+        if (graphSelectedId && nodeById.has(graphSelectedId)) {
+            selectGraphNode(svg, graphSelectedId, false);
+        } else if (stackGraphInspector) {
+            stackGraphInspector.hidden = true;
+        }
+    }
+
+    function openGraphFunction(name) {
+        const fn = currentStackReport?.functions?.find(item => item.name === name);
+        if (fn?.file) {
+            vscode.postMessage({ type: 'open-file', path: fn.file, line: fn.line ? fn.line - 1 : 0 });
+        }
+    }
+
+    function setZoomAt(newZoom, clientX, clientY) {
+        const clamped = Math.max(0.25, Math.min(3.0, newZoom));
+        if (Math.abs(clamped - graphZoom) < 0.001) { return; }
+
+        const svg = stackGraphContainer?.querySelector('.stack-graph');
+        if (!svg || !stackGraphContainer) {
+            graphZoom = clamped;
+            applyGraphZoom();
+            return;
+        }
+
+        if (clientX !== undefined && clientY !== undefined) {
+            const rect = stackGraphContainer.getBoundingClientRect();
+            const cursorX = clientX - rect.left;
+            const cursorY = clientY - rect.top;
+
+            const contentX = (stackGraphContainer.scrollLeft + cursorX) / graphZoom;
+            const contentY = (stackGraphContainer.scrollTop + cursorY) / graphZoom;
+
+            graphZoom = Math.round(clamped * 1000) / 1000;
+            applyGraphZoom();
+
+            stackGraphContainer.scrollLeft = contentX * graphZoom - cursorX;
+            stackGraphContainer.scrollTop = contentY * graphZoom - cursorY;
+        } else {
+            graphZoom = Math.round(clamped * 1000) / 1000;
+            applyGraphZoom();
+        }
+    }
+
+    function fitGraphToView() {
+        const svg = stackGraphContainer?.querySelector('.stack-graph');
+        if (!svg || !stackGraphContainer) { return; }
+        const baseWidth = Number(svg.dataset.baseWidth) || 500;
+        const availableWidth = stackGraphContainer.clientWidth - 28;
+        if (availableWidth > 60 && baseWidth > 0) {
+            const targetZoom = Math.max(0.25, Math.min(1.5, availableWidth / baseWidth));
+            setZoomAt(targetZoom);
+            stackGraphContainer.scrollLeft = 0;
+            stackGraphContainer.scrollTop = 0;
+        }
+    }
+
+    function applyGraphZoom() {
+        const svg = stackGraphContainer?.querySelector('.stack-graph');
+        if (svg) {
+            const baseW = Number(svg.dataset.baseWidth) || 500;
+            const baseH = Number(svg.dataset.baseHeight) || 300;
+            svg.setAttribute('width', Math.round(baseW * graphZoom));
+            svg.setAttribute('height', Math.round(baseH * graphZoom));
+        }
+        if (stackZoomLabel) { stackZoomLabel.textContent = `${Math.round(graphZoom * 100)}%`; }
+        if (stackZoomOut) { stackZoomOut.disabled = graphZoom <= 0.25; }
+        if (stackZoomIn) { stackZoomIn.disabled = graphZoom >= 3.0; }
+    }
+
+    function selectGraphNode(svg, nodeId, scroll = true) {
+        graphSelectedId = nodeId;
+        const related = new Set([nodeId]);
+        svg.querySelectorAll('.stack-graph-wire').forEach(wire => {
+            const active = wire.dataset.from === nodeId || wire.dataset.to === nodeId;
+            wire.classList.toggle('is-selected', active);
+            wire.classList.toggle('is-dimmed', !active);
+            if (active) { related.add(wire.dataset.from); related.add(wire.dataset.to); }
+        });
+        svg.querySelectorAll('.stack-graph-node').forEach(group => {
+            group.classList.toggle('is-selected', group.dataset.id === nodeId);
+            group.classList.toggle('is-dimmed', !related.has(group.dataset.id));
+        });
+        const group = [...svg.querySelectorAll('.stack-graph-node')].find(el => el.dataset.id === nodeId);
+        if (scroll && group) { group.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' }); }
+        if (!stackGraphInspector || !currentStackReport) { return; }
+        const node = currentStackReport.callGraph?.nodes.find(item => item.id === nodeId);
+        if (!node) { return; }
+        const edges = currentStackReport.callGraph?.edges || [];
+        const callers = edges.filter(edge => edge.to === nodeId && edge.from !== nodeId).length;
+        const callees = edges.filter(edge => edge.from === nodeId && edge.to !== nodeId).length;
+        stackGraphInspector.replaceChildren();
+        const info = document.createElement('div');
+        info.className = 'stack-inspector-main';
+        const name = document.createElement('strong');
+        name.textContent = node.name;
+        const fileBasename = node.file ? node.file.split(/[\\/]/).pop() : '';
+        const meta = document.createElement('span');
+        meta.textContent = `${fileBasename ? `${fileBasename} · ` : ''}${callers} callers · ${callees} calls · ${formatBytes(node.maxStack)} peak`;
+        info.append(name, meta);
+        stackGraphInspector.appendChild(info);
+        if (currentStackReport.functions.some(fn => fn.name === nodeId && fn.file)) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.title = 'Open source';
+            button.setAttribute('aria-label', `Open ${node.name} in source`);
+            button.textContent = 'Open';
+            button.addEventListener('click', () => openGraphFunction(nodeId));
+            stackGraphInspector.appendChild(button);
+        }
+        stackGraphInspector.hidden = false;
+    }
+
+    function renderFilteredStackFunctions() {
+        if (!stackFnList || !currentStackReport) { return; }
+        stackFnList.innerHTML = '';
+
+        const query = stackSearch ? stackSearch.value.trim().toLowerCase() : '';
+        const list = (currentStackReport.functions || []).filter(fn => {
+            if (!query) { return true; }
+            if (fn.name.toLowerCase().includes(query)) { return true; }
+            if (fn.file && fn.file.toLowerCase().includes(query)) { return true; }
+            return false;
+        });
+
+        if (list.length === 0) {
+            stackFnList.innerHTML = '<li class="stack-empty-hint">No functions match the search filter.</li>';
+            return;
+        }
+
+        const peak = currentStackReport.peakStack || 1;
+
+        // Sort by maxStack descending
+        list.sort((a, b) => b.maxStack - a.maxStack);
+
+        list.forEach(fn => {
+            const card = document.createElement('li');
+            const isRec = fn.isRecursive || fn.hasInfiniteSelfRecursion;
+            card.className = `stack-fn-card ${isRec ? 'is-recursive' : 'is-safe'}`;
+            card.id = `stack-fn-${escapeId(fn.name)}`;
+
+            const pct = Math.max(4, Math.min(100, Math.round((fn.maxStack / peak) * 100)));
+            const fileBasename = fn.file ? fn.file.split(/[\\/]/).pop() : '';
+            const fileTooltip = fn.file ? `${fn.file}${fn.line ? `:${fn.line}` : ''}` : '';
+            const filePill = fileBasename
+                ? `<span class="stack-pill pill-file" title="${escapeHtml(fileTooltip)}">${escapeHtml(fileBasename)}${fn.line ? `:${fn.line}` : ''}</span>`
+                : '';
+
+            card.innerHTML = `
+                <div class="stack-fn-header">
+                    <span class="stack-fn-name" title="${escapeHtml(fn.name)}">
+                        <i data-lucide="code-2"></i>
+                        <span class="stack-fn-title">${escapeHtml(fn.name)}()</span>
+                    </span>
+                    <div class="stack-fn-badges">
+                        ${filePill}
+                        ${isRec ? '<span class="stack-pill pill-danger">⚠️ Cycle</span>' : '<span class="stack-pill pill-safe">Safe</span>'}
+                        ${fn.hasDynamicAlloca ? '<span class="stack-pill pill-warning">alloca</span>' : ''}
+                    </div>
+                </div>
+                <div class="stack-bar-wrap">
+                    <div class="stack-bar-fill ${isRec ? 'fill-danger' : ''}" style="width: ${pct}%"></div>
+                </div>
+                <div class="stack-fn-meta">
+                    <span>Local: <strong>${formatBytes(fn.localStack)}</strong></span>
+                    <span>Peak: <strong>${formatBytes(fn.maxStack)}</strong> (${pct}%)</span>
+                </div>
+            `;
+
+            card.addEventListener('click', () => {
+                highlightStackFunction(fn.name);
+                if (fn.file) {
+                    vscode.postMessage({
+                        type: 'open-file',
+                        path: fn.file,
+                        line: fn.line ? fn.line - 1 : 0
+                    });
+                }
+            });
+
+            stackFnList.appendChild(card);
+        });
+
+        if (typeof lucide !== 'undefined') { lucide.createIcons(); }
+    }
+
+    function highlightStackFunction(funcName) {
+        if (!funcName) { return; }
+        if (currentStackReport && stackGraphMode === 'chains') {
+            const inChains = currentStackReport.callGraph?.edges?.some(e => e.from === funcName || e.to === funcName);
+            const fnObj = currentStackReport.functions?.find(f => f.name === funcName);
+            if (!inChains && !fnObj?.isRecursive && !fnObj?.exceedsLimit) {
+                stackGraphMode = 'all';
+                stackGraphModeAll?.classList.add('active');
+                stackGraphModeChains?.classList.remove('active');
+                renderCallGraph(currentStackReport);
+            }
+        }
+        const graph = stackGraphContainer?.querySelector('.stack-graph');
+        if (graph) { selectGraphNode(graph, funcName); }
+        const card = document.getElementById(`stack-fn-${escapeId(funcName)}`);
+        if (card) {
+            if (!graph) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+            card.classList.add('is-focused');
+            setTimeout(() => card.classList.remove('is-focused'), 2000);
+        }
+    }
+
+    function escapeId(name) {
+        return name.replace(/[^a-zA-Z0-9_-]/g, '_');
     }
 
     function renderFilteredFindings() {
