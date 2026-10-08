@@ -53,15 +53,28 @@ suite('DependencyInstaller Test Suite', () => {
         const dummySrc = path.join(__dirname, 'dummy_src.c');
         fs.writeFileSync(dummyBin, 'echo test');
         fs.writeFileSync(dummySrc, 'int main() { return 0; }');
+        let built: { command: string; tempFiles: string[] } | undefined;
         try {
-            const built = await buildCommand(dummyBin, dummySrc, '--report-file=rep.json');
-            assert.ok(built.command.includes('.coretrace/tools'), 'Command should navigate to or reference .coretrace/tools');
-            assert.ok(built.command.includes('CORETRACE_CPPCHECK_BIN'), 'Command should export CORETRACE_CPPCHECK_BIN');
-            assert.ok(built.command.includes('CORETRACE_IKOS_BIN'), 'Command should export CORETRACE_IKOS_BIN');
-            assert.ok(built.command.includes('CORETRACE_TSCANCODE_BIN'), 'Command should export CORETRACE_TSCANCODE_BIN');
-            assert.ok(built.command.includes('CORETRACE_FLAWFINDER_SCRIPT'), 'Command should export CORETRACE_FLAWFINDER_SCRIPT');
+            built = await buildCommand(dummyBin, dummySrc, '--report-file=rep.json');
+            let executedContent = built.command;
+            if (process.platform === 'win32') {
+                const shFile = built.tempFiles.find(f => f.endsWith('.sh'));
+                if (shFile && fs.existsSync(shFile)) {
+                    executedContent = fs.readFileSync(shFile, 'utf8');
+                }
+            }
+            assert.ok(executedContent.includes('.coretrace/tools'), 'Command should navigate to or reference .coretrace/tools');
+            assert.ok(executedContent.includes('CORETRACE_CPPCHECK_BIN'), 'Command should export CORETRACE_CPPCHECK_BIN');
+            assert.ok(executedContent.includes('CORETRACE_IKOS_BIN'), 'Command should export CORETRACE_IKOS_BIN');
+            assert.ok(executedContent.includes('CORETRACE_TSCANCODE_BIN'), 'Command should export CORETRACE_TSCANCODE_BIN');
+            assert.ok(executedContent.includes('CORETRACE_FLAWFINDER_SCRIPT'), 'Command should export CORETRACE_FLAWFINDER_SCRIPT');
         } finally {
             setMockWslAvailableForTesting(null);
+            if (built?.tempFiles) {
+                for (const tf of built.tempFiles) {
+                    try { fs.unlinkSync(tf); } catch {}
+                }
+            }
             try { fs.unlinkSync(dummyBin); } catch {}
             try { fs.unlinkSync(dummySrc); } catch {}
         }
