@@ -8,7 +8,7 @@ import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand } from './ctrace/AnalysisRunner';
 import { parseSarifOutput, countResults } from './ctrace/SarifParser';
 import { updateDiagnostics } from './ctrace/DiagnosticsManager';
-import { buildCtraceArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
@@ -361,7 +361,34 @@ export function activate(context: vscode.ExtensionContext) {
                                     sourceCode = await fs.promises.readFile(fp, 'utf8');
                                 } catch { /* ignore */ }
 
-                                const stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
+                                let stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
+
+                                // If ctrace was run with --sarif-format, ctrace >= 0.80 suppresses the stack analyzer
+                                // rendering from stdout/report-file into SARIF-only results (no function/stack metrics).
+                                // In that case, run a fast dedicated stack pass (~20ms) to retrieve the call-graph & stack metrics.
+                                if (!stackReport || stackReport.functions.length === 0) {
+                                    const isStackRequested = effectiveUiState.dynamicEnabled !== false &&
+                                        (effectiveUiState.dynamicTools === undefined || effectiveUiState.dynamicTools.includes('ctrace_stack_analyzer'));
+                                    if (isStackRequested) {
+                                        try {
+                                            const stackArgs = buildStackAnalyzerArgs({
+                                                ...effectiveUiState,
+                                                configFile: hasConfig ? configPath : undefined,
+                                            }, ctraceConfig);
+                                            const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs));
+                                            try {
+                                                const stackRes = await runCommand(stackCmd, extensionPath, token);
+                                                const stackOut = (stackRes.stdout || '') + (stackRes.stderr || '');
+                                                stackReport = parseStackReport(stackOut, sourceCode);
+                                            } finally {
+                                                stackTemp.forEach(tryDelete);
+                                            }
+                                        } catch (err) {
+                                            console.warn('[StackAnalyzer] Fallback extraction failed:', err);
+                                        }
+                                    }
+                                }
+
                                 if (stackReport && stackReport.functions.length > 0) {
                                     allStackReports.push(stackReport);
                                     const unifiedStack = mergeStackReports(allStackReports);

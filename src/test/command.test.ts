@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
+import { buildStackAnalyzerArgs } from '../ctraceRunner';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -80,6 +81,23 @@ suite('CommandBuilder Test Suite', () => {
             if (fs.existsSync(dummyBin)) { fs.unlinkSync(dummyBin); }
             if (fs.existsSync(dummySrc)) { fs.unlinkSync(dummySrc); }
         }
+    });
+
+    test('buildStackAnalyzerArgs includes invoke=ctrace_stack_analyzer without sarif-format', () => {
+        const dummyConfig: any = {
+            get: () => undefined
+        };
+        const args = buildStackAnalyzerArgs({
+            reportFile: '/tmp/rep.json',
+            entryPoints: ['main', 'doWork()'],
+            compdbFast: true
+        }, dummyConfig);
+
+        assert.ok(args.includes('--invoke=ctrace_stack_analyzer'));
+        assert.ok(args.includes('--entry-points=main,doWork'));
+        assert.ok(args.includes('--compdb-fast'));
+        assert.ok(!args.some(a => a.includes('--sarif-format')));
+        assert.ok(!args.some(a => a.includes('--report-file')));
     });
 });
 

@@ -1,4 +1,5 @@
 import type { StackFunction, StackReport, CallGraphNode, CallGraphEdge, CallChainStep } from '../types/stack';
+import { cleanFunctionName } from '../utils/functionCleaner';
 
 /**
  * Parses ctrace-stack-analyzer outputs from either JSON report content or plaintext IR mode.
@@ -30,12 +31,12 @@ export function parseStackReport(reportContent: string, sourceCode?: string): St
 
                 if (Array.isArray(parsed.functions)) {
                     functions = parsed.functions.map((f: any) => ({
-                        name: String(f.name || 'unknown'),
+                        name: cleanFunctionName(String(f.name || 'unknown')) || String(f.name || 'unknown'),
                         file: f.file || inputFile,
                         localStack: Number(f.localStack) || 0,
                         localStackLowerBound: f.localStackLowerBound,
                         localStackUnknown: Boolean(f.localStackUnknown),
-                        maxStack: Number(f.maxStack) || 0,
+                        maxStack: Number(f.maxStack) || (typeof f.maxStackLowerBound === 'number' ? f.maxStackLowerBound : (Number(f.localStack) || 0)),
                         maxStackLowerBound: f.maxStackLowerBound,
                         maxStackUnknown: Boolean(f.maxStackUnknown),
                         hasDynamicAlloca: Boolean(f.hasDynamicAlloca),
@@ -93,14 +94,17 @@ export function parseStackReport(reportContent: string, sourceCode?: string): St
  */
 function parseIrReportText(text: string): StackFunction[] {
     const list: StackFunction[] = [];
-    const functionRegex = /Function:\s*([a-zA-Z0-9_:$~]+)[^\n]*\n\s*local stack:\s*(\d+)\s*bytes\n\s*max stack[^:]*:\s*(\d+)\s*bytes/g;
+    const functionRegex = /Function:\s*([^\n\r]+?)(?:\s*\r?\n)\s*local stack:\s*(\d+)\s*bytes\r?\n\s*max stack[^:]*:\s*(?:unknown\s*(?:\(>=\s*)?)?(\d+)\s*bytes/g;
     let match: RegExpExecArray | null;
 
     while ((match = functionRegex.exec(text)) !== null) {
-        const name = match[1].trim();
+        const rawName = match[1].trim();
+        const parts = rawName.split(/\s+/);
+        const nameToClean = parts.length > 1 && parts[0].startsWith('_Z') ? parts.slice(1).join(' ') : rawName;
+        const name = cleanFunctionName(nameToClean) || rawName;
         const localStack = parseInt(match[2], 10) || 0;
         const maxStack = parseInt(match[3], 10) || localStack;
-        const isRecursive = text.includes(`recursive or mutually recursive function detected`) && text.includes(name);
+        const isRecursive = text.includes(`recursive or mutually recursive function detected`) && (text.includes(rawName) || text.includes(name));
 
         list.push({
             name,

@@ -340,3 +340,61 @@ export function generateConfigFileIfNeeded(
         return false;
     }
 }
+
+/**
+ * Builds arguments to invoke only ctrace_stack_analyzer without --sarif-format.
+ * This guarantees that ctrace outputs the full call graph and function stack sizes
+ * to stdout, even when the primary analysis is executed in SARIF mode.
+ */
+export function buildStackAnalyzerArgs(
+    uiState: CtraceUIState,
+    vscodeConfig: vscode.WorkspaceConfiguration
+): string[] {
+    const args: string[] = ['--invoke=ctrace_stack_analyzer'];
+
+    const rawEntryPoints = (uiState.entryPoints ?? [])
+        .flatMap(name => typeof name === 'string' ? name.split(',') : []);
+    const entryPoints = rawEntryPoints
+        .map(name => cleanFunctionName(name.trim()))
+        .filter((name, index, names): name is string =>
+            Boolean(name) && names.indexOf(name) === index
+        );
+    if (entryPoints.length > 0) {
+        args.push(`--entry-points=${entryPoints.join(',')}`);
+    }
+
+    const onlyDir = cleanValue(uiState.onlyDir);
+    if (onlyDir) { args.push(`--only-dir=${onlyDir}`); }
+
+    const excludeDir = cleanValue(uiState.excludeDir);
+    if (excludeDir) { args.push(`--exclude-dir=${excludeDir}`); }
+    if (uiState.includeStl === true) { args.push('--STL'); }
+
+    const compileCommandsPath = cleanValue(uiState.compileCommandsPath)
+        ?? configString(vscodeConfig, 'compileCommandsPath');
+    if (compileCommandsPath) { args.push(`--compile-commands=${compileCommandsPath}`); }
+
+    if (uiState.compdbFast === true || vscodeConfig.get<boolean>('performance.compdbFast', false)) {
+        args.push('--compdb-fast');
+    }
+    if (uiState.includeCompdbDeps === true) { args.push('--include-compdb-deps'); }
+
+    const configFile = cleanValue(uiState.configFile);
+    if (configFile) { args.push(`--config=${configFile}`); }
+
+    if (uiState.timing === true) { args.push('--timing'); }
+    if (uiState.demangle === true) { args.push('--demangle'); }
+
+    if (uiState.smtEnabled === true) {
+        args.push(`--smt=on`);
+        args.push(`--smt-backend=${validSmtBackend(uiState.smtBackend)}`);
+        args.push(`--smt-secondary-backend=${validSmtBackend(uiState.smtSecondaryBackend)}`);
+        args.push(`--smt-mode=${validSmtMode(uiState.smtMode)}`);
+        const timeout = validPositiveInteger(uiState.smtTimeoutMs);
+        if (timeout !== undefined) { args.push(`--smt-timeout-ms=${timeout}`); }
+        const rules = cleanValue(uiState.smtRules);
+        if (rules) { args.push(`--smt-rules=${rules}`); }
+    }
+
+    return args;
+}

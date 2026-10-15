@@ -106,6 +106,30 @@ Function: other_func
         assert.strictEqual(report.functions[0].isRecursive, true);
     });
 
+    test('parses plaintext IR report with unknown bounds and demangled function signatures', () => {
+        const textReport = `
+Mode: IR
+
+Function: _Z10isPositivei isPositive(int)
+	local stack: 16 bytes
+	max stack (including callees): 16 bytes
+
+Function: main
+	local stack: 16 bytes
+	max stack (including callees): unknown (>= 32 bytes)
+`;
+        const report = parseStackReport(textReport);
+        assert.ok(report);
+        assert.strictEqual(report.functions.length, 2);
+        assert.strictEqual(report.functions[0].name, 'isPositive');
+        assert.strictEqual(report.functions[0].localStack, 16);
+        assert.strictEqual(report.functions[0].maxStack, 16);
+        assert.strictEqual(report.functions[1].name, 'main');
+        assert.strictEqual(report.functions[1].localStack, 16);
+        assert.strictEqual(report.functions[1].maxStack, 32);
+        assert.strictEqual(report.peakStack, 32);
+    });
+
     test('merges multiple stack reports across workspace files into unified report', () => {
         const reportA = parseStackReport(JSON.stringify({
             meta: { inputFile: '/path/fileA.c' },
