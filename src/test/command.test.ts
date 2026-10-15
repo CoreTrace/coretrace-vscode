@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
-import { buildStackAnalyzerArgs } from '../ctraceRunner';
+import { buildStackAnalyzerArgs, generateConfigFileIfNeeded } from '../ctraceRunner';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -95,9 +95,30 @@ suite('CommandBuilder Test Suite', () => {
 
         assert.ok(args.includes('--invoke=ctrace_stack_analyzer'));
         assert.ok(args.includes('--entry-points=main,doWork'));
-        assert.ok(args.includes('--compdb-fast'));
+        assert.ok(!args.some(a => a.includes('--compdb-fast')));
+        assert.ok(!args.some(a => a.includes('--only-dir')));
         assert.ok(!args.some(a => a.includes('--sarif-format')));
         assert.ok(!args.some(a => a.includes('--report-file')));
+    });
+
+    test('generateConfigFileIfNeeded writes directory filters and stack options to json config', () => {
+        const tmpConfig = path.join(__dirname, `test-cfg-${Date.now()}.json`);
+        try {
+            const hasConfig = generateConfigFileIfNeeded(tmpConfig, {
+                onlyDir: 'src,lib',
+                excludeDir: 'vendor',
+                includeStl: true,
+                compdbFast: true
+            });
+            assert.strictEqual(hasConfig, true);
+            const content = JSON.parse(fs.readFileSync(tmpConfig, 'utf8'));
+            assert.deepStrictEqual(content.stack_analyzer.only_dirs, ['src', 'lib']);
+            assert.deepStrictEqual(content.stack_analyzer.exclude_dirs, ['vendor']);
+            assert.strictEqual(content.stack_analyzer.include_stl, true);
+            assert.strictEqual(content.stack_analyzer.compdb_fast, true);
+        } finally {
+            if (fs.existsSync(tmpConfig)) { fs.unlinkSync(tmpConfig); }
+        }
     });
 });
 

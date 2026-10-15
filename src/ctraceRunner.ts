@@ -39,7 +39,7 @@ export interface CtraceUIState {
     smtTimeoutMs?: number;
     smtRules?: string;
     analysisProfile?: AnalysisProfile;
-    reportFile: string;
+    reportFile?: string;
     configFile?: string;
 }
 
@@ -97,20 +97,9 @@ export function buildCtraceArgs(
     args.push('--sarif-format');
     args.push(`--report-file=${requiredReportFile(uiState.reportFile)}`);
 
-    const onlyDir = cleanValue(uiState.onlyDir);
-    if (onlyDir) { args.push(`--only-dir=${onlyDir}`); }
-
-    const excludeDir = cleanValue(uiState.excludeDir);
-    if (excludeDir) { args.push(`--exclude-dir=${excludeDir}`); }
-    if (uiState.includeStl === true) { args.push('--STL'); }
-
     const compileCommandsPath = cleanValue(uiState.compileCommandsPath)
         ?? configString(vscodeConfig, 'compileCommandsPath');
     if (compileCommandsPath) { args.push(`--compile-commands=${compileCommandsPath}`); }
-
-    if (uiState.compdbFast === true || vscodeConfig.get<boolean>('performance.compdbFast', false)) {
-        args.push('--compdb-fast');
-    }
 
     if (uiState.includeCompdbDeps === true) { args.push('--include-compdb-deps'); }
 
@@ -118,10 +107,8 @@ export function buildCtraceArgs(
     if (configFile) { args.push(`--config=${configFile}`); }
 
     if (uiState.quiet === true) { args.push('--quiet'); }
-    if (uiState.warningsOnly === true) { args.push('--warnings-only'); }
     if (uiState.timing === true) { args.push('--timing'); }
     if (uiState.demangle === true) { args.push('--demangle'); }
-    if (uiState.dumpFilter === true) { args.push('--dump-filter'); }
 
     const invokedTools = [...partialTools, ...(uiState.invokedTools ?? [])]
         .filter((tool, index, tools): tool is string =>
@@ -152,33 +139,11 @@ export function buildCtraceArgs(
     const bufferModel = configString(vscodeConfig, 'models.bufferModel');
     if (bufferModel) { args.push(`--buffer-model=${bufferModel}`); }
 
-    const jobs = validPositiveInteger(vscodeConfig.get<number>('performance.jobs'));
-    // if (jobs !== undefined) { args.push(`--jobs=${jobs}`); }
-
-    const compileIrCacheDir = configString(vscodeConfig, 'performance.compileIrCacheDir');
-    if (compileIrCacheDir) { args.push(`--compile-ir-cache-dir=${compileIrCacheDir}`); }
-
     const resourceModel = configString(vscodeConfig, 'models.resourceModel');
     if (resourceModel) { args.push(`--resource-model=${resourceModel}`); }
 
-    const resourceCrossTu = uiState.resourceCrossTu !== undefined
-        ? uiState.resourceCrossTu
-        : vscodeConfig.get<boolean | undefined>('analysis.resourceCrossTu');
-    if (resourceCrossTu === true) {
-        args.push('--resource-cross-tu');
-    } else if (resourceCrossTu === false) {
-        // args.push('--no-resource-cross-tu');
-    }
-
     const stackLimit = configValue(vscodeConfig, 'analysis.stackLimit');
     if (stackLimit !== undefined) { args.push(`--stack-limit=${stackLimit}`); }
-
-    const resourceSummaryDir = configString(vscodeConfig, 'cache.resourceSummaryDir');
-    if (resourceSummaryDir) { args.push(`--resource-summary-cache-dir=${resourceSummaryDir}`); }
-
-    if (vscodeConfig.get<boolean>('cache.memoryOnly', false)) {
-        args.push('--resource-summary-cache-memory-only');
-    }
 
     return args;
 }
@@ -203,8 +168,8 @@ function normalizeTools(value: unknown, fallback: string[]): string[] {
     return value.filter((tool): tool is string => typeof tool === 'string' && fallback.includes(tool));
 }
 
-function configString(config: vscode.WorkspaceConfiguration, key: string): string | undefined {
-    return cleanValue(config.get<string>(key));
+function configString(config: vscode.WorkspaceConfiguration | undefined, key: string): string | undefined {
+    return cleanValue(config?.get<string>(key));
 }
 
 function configValue(config: vscode.WorkspaceConfiguration, key: string): string | number | undefined {
@@ -213,7 +178,7 @@ function configValue(config: vscode.WorkspaceConfiguration, key: string): string
     return cleanValue(value);
 }
 
-function requiredReportFile(value: string): string {
+function requiredReportFile(value?: string): string {
     const reportFile = cleanValue(value);
     if (!reportFile) {
         throw new Error('Ctrace reportFile is required to build SARIF arguments.');
@@ -276,7 +241,8 @@ function toInternalPath(p: string): string {
 export function generateConfigFileIfNeeded(
     configPath: string,
     uiState: CtraceUIState,
-    workspaceRoot?: string
+    workspaceRoot?: string,
+    vscodeConfig?: vscode.WorkspaceConfiguration
 ): boolean {
     const parseList = (val?: string) => {
         if (!val || typeof val !== 'string') { return []; }
@@ -312,13 +278,52 @@ export function generateConfigFileIfNeeded(
         .map(s => s.replace(/^--only-functions?=/, '').replace(/^--only-func=/, '').trim())
         .filter(Boolean);
 
-    if (includeDirs.length === 0 && defines.length === 0 && compileArgs.length === 0 && onlyFunctions.length === 0) {
+    const onlyDirs = parseList(uiState.onlyDir);
+    const excludeDirs = parseList(uiState.excludeDir);
+    const includeStl = uiState.includeStl === true;
+    const compdbFast = uiState.compdbFast === true || (vscodeConfig?.get<boolean>('performance.compdbFast', false) ?? false);
+    const dumpFilter = uiState.dumpFilter === true;
+    const warningsOnly = uiState.warningsOnly === true;
+    const compileIrCacheDir = configString(vscodeConfig, 'performance.compileIrCacheDir');
+    const resourceCrossTu = uiState.resourceCrossTu !== undefined
+        ? uiState.resourceCrossTu
+        : vscodeConfig?.get<boolean | undefined>('analysis.resourceCrossTu');
+    const resourceSummaryDir = configString(vscodeConfig, 'cache.resourceSummaryDir');
+    const resourceSummaryMemoryOnly = vscodeConfig?.get<boolean>('cache.memoryOnly', false);
+
+    const hasAnyConfig = (
+        includeDirs.length > 0 ||
+        defines.length > 0 ||
+        compileArgs.length > 0 ||
+        onlyFunctions.length > 0 ||
+        onlyDirs.length > 0 ||
+        excludeDirs.length > 0 ||
+        includeStl ||
+        compdbFast ||
+        dumpFilter ||
+        warningsOnly ||
+        Boolean(compileIrCacheDir) ||
+        resourceCrossTu !== undefined ||
+        Boolean(resourceSummaryDir) ||
+        Boolean(resourceSummaryMemoryOnly)
+    );
+
+    if (!hasAnyConfig) {
         return false;
     }
 
-    const configData: Record<string, any> = {
-        stack_analyzer: {}
-    };
+    let configData: Record<string, any> = {};
+    if (uiState.configFile && fs.existsSync(uiState.configFile)) {
+        try {
+            configData = JSON.parse(fs.readFileSync(uiState.configFile, 'utf8'));
+        } catch {
+            configData = {};
+        }
+    }
+    if (!configData.stack_analyzer) {
+        configData.stack_analyzer = {};
+    }
+
     if (includeDirs.length > 0) {
         configData.stack_analyzer.include_dirs = includeDirs;
         configData.stack_analyzer.extra_args = extraArgs;
@@ -331,6 +336,36 @@ export function generateConfigFileIfNeeded(
     }
     if (onlyFunctions.length > 0) {
         configData.stack_analyzer.only_functions = onlyFunctions;
+    }
+    if (onlyDirs.length > 0) {
+        configData.stack_analyzer.only_dirs = onlyDirs;
+    }
+    if (excludeDirs.length > 0) {
+        configData.stack_analyzer.exclude_dirs = excludeDirs;
+    }
+    if (includeStl) {
+        configData.stack_analyzer.include_stl = true;
+    }
+    if (compdbFast) {
+        configData.stack_analyzer.compdb_fast = true;
+    }
+    if (dumpFilter) {
+        configData.stack_analyzer.dump_filter = true;
+    }
+    if (warningsOnly) {
+        configData.stack_analyzer.warnings_only = true;
+    }
+    if (compileIrCacheDir) {
+        configData.stack_analyzer.compile_ir_cache_dir = compileIrCacheDir;
+    }
+    if (resourceCrossTu !== undefined) {
+        configData.stack_analyzer.resource_cross_tu = resourceCrossTu;
+    }
+    if (resourceSummaryDir) {
+        configData.stack_analyzer.resource_summary_cache_dir = resourceSummaryDir;
+    }
+    if (resourceSummaryMemoryOnly) {
+        configData.stack_analyzer.resource_summary_cache_memory_only = true;
     }
 
     try {
@@ -348,7 +383,7 @@ export function generateConfigFileIfNeeded(
  */
 export function buildStackAnalyzerArgs(
     uiState: CtraceUIState,
-    vscodeConfig: vscode.WorkspaceConfiguration
+    vscodeConfig?: vscode.WorkspaceConfiguration
 ): string[] {
     const args: string[] = ['--invoke=ctrace_stack_analyzer'];
 
@@ -363,20 +398,10 @@ export function buildStackAnalyzerArgs(
         args.push(`--entry-points=${entryPoints.join(',')}`);
     }
 
-    const onlyDir = cleanValue(uiState.onlyDir);
-    if (onlyDir) { args.push(`--only-dir=${onlyDir}`); }
-
-    const excludeDir = cleanValue(uiState.excludeDir);
-    if (excludeDir) { args.push(`--exclude-dir=${excludeDir}`); }
-    if (uiState.includeStl === true) { args.push('--STL'); }
-
     const compileCommandsPath = cleanValue(uiState.compileCommandsPath)
         ?? configString(vscodeConfig, 'compileCommandsPath');
     if (compileCommandsPath) { args.push(`--compile-commands=${compileCommandsPath}`); }
 
-    if (uiState.compdbFast === true || vscodeConfig.get<boolean>('performance.compdbFast', false)) {
-        args.push('--compdb-fast');
-    }
     if (uiState.includeCompdbDeps === true) { args.push('--include-compdb-deps'); }
 
     const configFile = cleanValue(uiState.configFile);

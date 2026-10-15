@@ -218,6 +218,14 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (scanWorkspace) {
                 effectiveUiState = { ...uiState, scanMode, autoEntryPoints: false };
+            } else {
+                effectiveUiState = {
+                    ...uiState,
+                    scanMode,
+                    onlyDir: undefined,
+                    excludeDir: undefined,
+                    resourceCrossTu: false,
+                };
             }
 
             if (!effectiveUiState.compileCommandsPath) {
@@ -241,7 +249,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (scanMode === 'file' && autoEntryPoints && !uiState.entryPoints?.length) {
                 const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filesToAnalyze[0]));
                 const symbols = await getFunctionSymbols(document);
-                effectiveUiState = { ...uiState, scanMode, entryPoints: symbols };
+                effectiveUiState = { ...effectiveUiState, scanMode, entryPoints: symbols };
             }
 
             output.show(true);
@@ -269,7 +277,7 @@ export function activate(context: vscode.ExtensionContext) {
                     }
 
                     const configPath = createConfigPath(extensionPath);
-                    const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot);
+                    const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
 
                     let hadToolExecutionWarning = false;
                     try {
@@ -307,7 +315,7 @@ export function activate(context: vscode.ExtensionContext) {
                             const args = buildCtraceArgs({
                                 ...effectiveUiState,
                                 reportFile: reportPath,
-                                configFile: hasConfig ? configPath : undefined,
+                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
                             }, ctraceConfig);
                             const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args));
                             tryDelete(reportPath);
@@ -373,7 +381,7 @@ export function activate(context: vscode.ExtensionContext) {
                                         try {
                                             const stackArgs = buildStackAnalyzerArgs({
                                                 ...effectiveUiState,
-                                                configFile: hasConfig ? configPath : undefined,
+                                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
                                             }, ctraceConfig);
                                             const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs));
                                             try {

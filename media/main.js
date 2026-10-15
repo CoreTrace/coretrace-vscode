@@ -201,6 +201,10 @@
         [onlyDirGroup, excludeDirGroup].forEach(group => {
             if (group) { group.classList.toggle('is-hidden', !workspace); }
         });
+        if (!workspace && modeChanged) {
+            setValue('only-dir', '');
+            setValue('exclude-dir', '');
+        }
         if (crossTuCb) {
             crossTuCb.disabled = !workspace;
             if (!workspace) { crossTuCb.checked = false; }
@@ -411,9 +415,10 @@
         setAnalysisProfile(saved.analysisProfile || 'full');
         restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false);
         restoreToolSelection('.dynamic-tool', saved.dynamicTools, saved.dynamicEnabled !== false);
+        const isWs = persistedState.scanWorkspace === true;
         setValue('only-function', saved.onlyFunction || '');
-        setValue('only-dir', saved.onlyDir || '');
-        setValue('exclude-dir', saved.excludeDir || '');
+        setValue('only-dir', isWs ? (saved.onlyDir || '') : '');
+        setValue('exclude-dir', isWs ? (saved.excludeDir || '') : '');
         setChecked('include-stl', saved.includeStl === true);
         setChecked('resource-cross-tu', saved.resourceCrossTu === true);
         setChecked('auto-entry-points', saved.autoEntryPoints === true);
@@ -483,8 +488,8 @@
             staticEnabled: selectedTools('.static-tool').length > 0,
             dynamicEnabled: selectedTools('.dynamic-tool').length > 0,
             onlyFunction: valueOf('only-function'),
-            onlyDir: valueOf('only-dir'),
-            excludeDir: valueOf('exclude-dir'),
+            onlyDir: scanWorkspace ? valueOf('only-dir') : '',
+            excludeDir: scanWorkspace ? valueOf('exclude-dir') : '',
             includeStl: checked('include-stl'),
             resourceCrossTu: scanWorkspace && checked('resource-cross-tu'),
             autoEntryPoints: !scanWorkspace && checked('auto-entry-points'),
