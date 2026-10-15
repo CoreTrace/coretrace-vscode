@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
-import { checkDependencies, getInstallationScript } from '../ctrace/DependencyInstaller';
+import { checkDependencies, getInstallationScript, canRunSudoWithoutPassword, setMockPasswordlessSudoForTesting } from '../ctrace/DependencyInstaller';
 import { buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
 
 suite('DependencyInstaller Test Suite', () => {
@@ -45,6 +45,18 @@ suite('DependencyInstaller Test Suite', () => {
         } finally {
             setMockWslAvailableForTesting(null);
         }
+    });
+
+    test('canRunSudoWithoutPassword respects mock and returns boolean', async () => {
+        setMockPasswordlessSudoForTesting(true);
+        assert.strictEqual(await canRunSudoWithoutPassword(), true);
+
+        setMockPasswordlessSudoForTesting(false);
+        assert.strictEqual(await canRunSudoWithoutPassword(), false);
+
+        setMockPasswordlessSudoForTesting(null);
+        const actual = await canRunSudoWithoutPassword();
+        assert.strictEqual(typeof actual, 'boolean');
     });
 
     test('buildCommand includes tools directory and CORETRACE environment variables', async () => {

@@ -1,7 +1,26 @@
 import * as cp from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isWslAvailable } from './CommandBuilder';
+
+let mockPasswordlessSudo: boolean | null = null;
+
+export function setMockPasswordlessSudoForTesting(mock: boolean | null): void {
+    mockPasswordlessSudo = mock;
+}
+
+export function canRunSudoWithoutPassword(): Promise<boolean> {
+    if (mockPasswordlessSudo !== null) {
+        return Promise.resolve(mockPasswordlessSudo);
+    }
+    return new Promise((resolve) => {
+        cp.exec('sudo -n true', (err) => {
+            resolve(!err);
+        });
+    });
+}
 
 export interface DependencyStatus {
     allInstalled: boolean;
@@ -365,6 +384,35 @@ export async function installDependencies(
     }
 
     progress.report({ message: 'Installing packages & building analyzers in WSL/Linux...', increment: 20 });
+
+    if (process.platform !== 'win32' && !(await canRunSudoWithoutPassword())) {
+        const scriptPath = path.join(os.tmpdir(), `coretrace-install-${Date.now()}-${process.pid}.sh`);
+        await fs.promises.writeFile(scriptPath, script, { mode: 0o755 });
+        output.appendLine('[CoreTrace] sudo requires a password on this machine. Launching installer in interactive VS Code terminal...');
+        vscode.window.showInformationMessage(
+            'CoreTrace dependency installation requires administrator (sudo) privileges. Please enter your password in the opened terminal to proceed.'
+        );
+        const terminal = vscode.window.createTerminal({ name: 'CoreTrace: Install Dependencies' });
+        terminal.show(true);
+        terminal.sendText(`sudo "${scriptPath}" && rm -f "${scriptPath}"`);
+
+        const disposable = vscode.window.onDidCloseTerminal(async (closedTerminal) => {
+            if (closedTerminal === terminal) {
+                disposable.dispose();
+                try { await fs.promises.unlink(scriptPath).catch(() => {}); } catch {}
+                const status = await checkDependencies(distro);
+                if (status.allInstalled) {
+                    output.appendLine('[CoreTrace] All dependencies (cppcheck, flawfinder, ikos, tscancode) are operational!');
+                    vscode.window.showInformationMessage('CoreTrace analyzers (cppcheck, flawfinder, ikos, tscancode) have been successfully installed and configured!');
+                } else {
+                    const missingList = status.missing.join(', ');
+                    output.appendLine(`[CoreTrace] Some dependencies could not be verified: ${missingList}`);
+                    vscode.window.showWarningMessage(`Dependency setup finished, but some tools could not be verified: ${missingList}. Check the Output channel.`);
+                }
+            }
+        });
+        return true;
+    }
 
     const result = await execShellCommand(script, {
         asRoot: true,
