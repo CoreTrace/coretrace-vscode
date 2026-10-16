@@ -239,6 +239,8 @@ elif command -v brew >/dev/null 2>&1; then
     echo "Detected macOS (Homebrew)."
     # Homebrew refuses to run as root, so install as the invoking user.
     sudo -u "\${SUDO_USER:-$(id -un)}" brew install cppcheck flawfinder cmake python3 || true
+    # IKOS is only published through NASA's tap (builds LLVM deps, can take a while).
+    sudo -u "\${SUDO_USER:-$(id -un)}" brew install nasa-sw-vnv/core/ikos || true
 else
     echo "Warning: Unrecognized package manager. Please ensure git, g++, make, cmake, python3, and curl are installed."
 fi

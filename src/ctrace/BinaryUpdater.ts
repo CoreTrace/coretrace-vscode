@@ -53,8 +53,10 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     const FAILURE_BACKOFF = 60 * 1000;
 
     // If we have a cached binary and checked recently, avoid spamming the GitHub API.
-    if (downloadedBinaryPath && now - lastCheck < TWELVE_HOURS) {
-        return downloadedBinaryPath;
+    // A PATH binary counts too: platforms without a release asset (macOS) would otherwise hit the API on every scan.
+    const knownBinary = downloadedBinaryPath ?? await locateBinaryOnPath();
+    if (knownBinary && now - lastCheck < TWELVE_HOURS) {
+        return knownBinary;
     }
 
     // When there is no cached binary, keep retrying with a short backoff.
