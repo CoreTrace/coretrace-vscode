@@ -72,8 +72,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (!p) {
             const extPath = context.extensionUri.fsPath;
             const globalStorage = context.globalStorageUri.fsPath;
+            const hint = process.platform === 'darwin'
+                ? '\nCoreTrace publishes no prebuilt macOS binary: build it from https://github.com/CoreTrace/coretrace and put `ctrace` on your PATH.'
+                : '';
             vscode.window.showErrorMessage(
-                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\nSee the "Ctrace" Output channel for details.`
+                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\n- PATH${hint}\nSee the "Ctrace" Output channel for details.`
             );
         }
         return p;

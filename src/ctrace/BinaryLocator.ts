@@ -23,6 +23,22 @@ export async function locateBinary(extensionPath: string): Promise<string | null
     return null;
 }
 
+/**
+ * Looks for a ctrace binary on PATH (e.g. built from source on macOS, where
+ * no prebuilt release exists). Returns the resolved path, or null.
+ */
+export async function locateBinaryOnPath(): Promise<string | null> {
+    for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+        for (const name of ['ctrace', 'coretrace']) {
+            const candidate = path.join(dir, name);
+            if (await isExecutableFile(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return null;
+}
+
 async function isExecutableFile(filePath: string): Promise<boolean> {
     try {
         const stat = await fs.promises.stat(filePath);

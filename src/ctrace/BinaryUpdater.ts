@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as tar from 'tar';
 import { pipeline } from 'stream/promises';
 import { Readable, Transform } from 'stream';
-import { locateBinary } from './BinaryLocator';
+import { locateBinary, locateBinaryOnPath } from './BinaryLocator';
 
 const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrace/releases/latest';
 
@@ -53,15 +53,17 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     const FAILURE_BACKOFF = 60 * 1000;
 
     // If we have a cached binary and checked recently, avoid spamming the GitHub API.
-    if (downloadedBinaryPath && now - lastCheck < TWELVE_HOURS) {
-        return downloadedBinaryPath;
+    // A PATH binary counts too: platforms without a release asset (macOS) would otherwise hit the API on every scan.
+    const knownBinary = downloadedBinaryPath ?? await locateBinaryOnPath();
+    if (knownBinary && now - lastCheck < TWELVE_HOURS) {
+        return knownBinary;
     }
 
     // When there is no cached binary, keep retrying with a short backoff.
     // This avoids a 12-hour lockout if the very first download fails.
     if (!downloadedBinaryPath && now - lastFailedCheck < FAILURE_BACKOFF) {
         output.appendLine('Skipping update check due to recent failure backoff.');
-        return await locateBinary(context.extensionUri.fsPath);
+        return await locateBinaryOnPath();
     }
 
     try {
@@ -121,8 +123,8 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     const cachedBin = await getExtractedBinaryPath(binDir);
     if (cachedBin) return cachedBin;
 
-    // Fallback to bundled
-    return await locateBinary(context.extensionUri.fsPath);
+    // Bundled was already checked at the top; last resort is a user-installed ctrace.
+    return await locateBinaryOnPath();
 }
 
 function getAssetForPlatform(assets: any[]): { name: string; url: string } | null {
