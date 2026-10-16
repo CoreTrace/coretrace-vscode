@@ -235,6 +235,10 @@ elif command -v zypper >/dev/null 2>&1; then
 elif command -v apk >/dev/null 2>&1; then
     echo "Detected Alpine Linux (apk)."
     apk add --no-cache cppcheck flawfinder build-base git cmake python3 py3-pip curl || true
+elif command -v brew >/dev/null 2>&1; then
+    echo "Detected macOS (Homebrew)."
+    # Homebrew refuses to run as root, so install as the invoking user.
+    sudo -u "\${SUDO_USER:-$(id -un)}" brew install cppcheck flawfinder cmake python3 || true
 else
     echo "Warning: Unrecognized package manager. Please ensure git, g++, make, cmake, python3, and curl are installed."
 fi
@@ -242,7 +246,8 @@ fi
 echo "=== [2/5] Creating CoreTrace tools directory structure... ==="
 USER_HOME="$CORETRACE_USER_HOME"
 if [ -z "$USER_HOME" ] && [ -n "$SUDO_USER" ]; then
-    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    # getent does not exist on macOS; tilde expansion works everywhere.
+    USER_HOME=$(eval echo "~$SUDO_USER")
 fi
 if [ -z "$USER_HOME" ]; then
     USER_HOME="$HOME"
@@ -344,7 +349,7 @@ fi
 # Ensure permissions
 TOOLS_OWNER="$CORETRACE_USER_NAME"
 if [ -z "$TOOLS_OWNER" ]; then TOOLS_OWNER="$SUDO_USER"; fi
-if [ -n "$TOOLS_OWNER" ]; then chown -R "$TOOLS_OWNER:$TOOLS_OWNER" "$TOOLS_DIR" 2>/dev/null || true; fi
+if [ -n "$TOOLS_OWNER" ]; then chown -R "$TOOLS_OWNER" "$TOOLS_DIR" 2>/dev/null || true; fi
 chmod -R 755 "$TOOLS_DIR" 2>/dev/null || true
 
 echo "=== All CoreTrace dependencies installed and verified successfully! ==="
