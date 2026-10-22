@@ -1,7 +1,7 @@
 {
-  "name": "coretrace-audit",
-  "displayName": "CoreTrace Audit",
-  "description": "Integration for CoreTrace CLI Audit Tool",
+  "name": "coretrace",
+  "displayName": "CoreTrace",
+  "description": "Integration for CoreTrace CLI",
   "version": "0.3.3",
   "publisher": "CoreTrace",
   "icon": "icon.png",
@@ -39,7 +39,7 @@
       "activitybar": [
         {
           "id": "ctrace-sidebar-view",
-          "title": "Ctrace Audit",
+          "title": "CoreTrace",
           "icon": "media/shield.svg"
         }
       ]

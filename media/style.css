@@ -42,6 +42,21 @@ body {
     animation: view-enter 0.22s ease both;
 }
 
+#dashboard-view {
+    position: relative;
+    z-index: 50;
+}
+
+#settings-view {
+    position: relative;
+    z-index: 50;
+}
+
+#dashboard-results {
+    position: relative;
+    z-index: 1;
+}
+
 .settings-panel {
     display: none;
 }
@@ -442,6 +457,8 @@ body {
 }
 
 .run-controls {
+    position: relative;
+    z-index: 60;
     display: flex;
     align-items: stretch;
     gap: 7px;
@@ -512,6 +529,8 @@ body {
 }
 
 .analysis-mode-row {
+    position: relative;
+    z-index: 70;
     display: flex;
     gap: 3px;
     flex: 0 0 auto;
@@ -520,6 +539,13 @@ body {
 .analysis-mode-menu {
     position: relative;
     flex: 1;
+}
+
+.analysis-mode-menu.menu-open,
+.analysis-mode-menu:focus-within,
+.analysis-mode-menu:has(.analysis-mode-toggle[aria-expanded="true"]),
+.analysis-mode-menu:has(.tool-dropdown:not([hidden])) {
+    z-index: 100;
 }
 
 .analysis-mode-toggle {
@@ -541,6 +567,12 @@ body {
 }
 
 .analysis-mode-toggle svg { width: 13px; height: 13px; }
+.analysis-mode-toggle .mode-logo {
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
 .analysis-mode-toggle:hover { color: var(--coretrace-text); }
 .analysis-mode-toggle.active {
     color: var(--coretrace-red-bright);
@@ -559,7 +591,7 @@ body {
 
 .tool-dropdown {
     position: absolute;
-    z-index: 20;
+    z-index: 1000;
     top: calc(100% + 6px);
     left: 0;
     min-width: 174px;

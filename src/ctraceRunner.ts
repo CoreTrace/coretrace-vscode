@@ -53,8 +53,8 @@ const ALLOWED_INVOKE_TOOLS = new Set([
     'ikos',
     'tscancode',
 ]);
-const STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode'];
-const DYNAMIC_TOOLS = ['ctrace_stack_analyzer'];
+const STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'];
+const DYNAMIC_TOOLS = ['coretrace-runtime-analyzer'];
 
 /**
  * Converts Webview state and VS Code settings into safe ctrace CLI arguments.
