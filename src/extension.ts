@@ -142,7 +142,7 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const requestedStaticTools: string[] = uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode'];
+            const requestedStaticTools: string[] = uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'];
             if (uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
                 const depStatus = await checkDependencies();
                 const missingRequested = requestedStaticTools.filter((t) => depStatus.missing.includes(t));
@@ -378,8 +378,12 @@ export function activate(context: vscode.ExtensionContext) {
                                 // rendering from stdout/report-file into SARIF-only results (no function/stack metrics).
                                 // In that case, run a fast dedicated stack pass (~20ms) to retrieve the call-graph & stack metrics.
                                 if (!stackReport || stackReport.functions.length === 0) {
-                                    const isStackRequested = effectiveUiState.dynamicEnabled !== false &&
-                                        (effectiveUiState.dynamicTools === undefined || effectiveUiState.dynamicTools.includes('ctrace_stack_analyzer'));
+                                    const isStackRequested = (
+                                        (effectiveUiState.staticEnabled !== false &&
+                                            (effectiveUiState.staticTools === undefined || effectiveUiState.staticTools.includes('ctrace_stack_analyzer'))) ||
+                                        (effectiveUiState.dynamicEnabled !== false &&
+                                            effectiveUiState.dynamicTools?.includes('ctrace_stack_analyzer'))
+                                    );
                                     if (isStackRequested) {
                                         try {
                                             const stackArgs = buildStackAnalyzerArgs({

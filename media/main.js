@@ -108,6 +108,7 @@
     function setToolMenu(button, menu, open) {
         if (!button || !menu) { return; }
 
+        const parentMenu = button.closest('.analysis-mode-menu');
         const existingTimer = closeTimeouts.get(menu);
         if (existingTimer) {
             clearTimeout(existingTimer);
@@ -115,19 +116,21 @@
         }
 
         if (open) {
+            if (parentMenu) { parentMenu.classList.add('menu-open'); }
             menu.classList.remove('is-closing');
             menu.hidden = false;
             button.setAttribute('aria-expanded', 'true');
         } else {
+            button.setAttribute('aria-expanded', 'false');
             if (menu.hidden) {
-                button.setAttribute('aria-expanded', 'false');
+                if (parentMenu) { parentMenu.classList.remove('menu-open'); }
                 return;
             }
-            button.setAttribute('aria-expanded', 'false');
             menu.classList.add('is-closing');
             const timer = setTimeout(() => {
                 menu.hidden = true;
                 menu.classList.remove('is-closing');
+                if (parentMenu) { parentMenu.classList.remove('menu-open'); }
                 closeTimeouts.delete(menu);
             }, 160);
             closeTimeouts.set(menu, timer);
@@ -413,7 +416,7 @@
 
         setScanMode(persistedState.scanWorkspace === true);
         setAnalysisProfile(saved.analysisProfile || 'full');
-        restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false);
+        restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false, saved.dynamicTools);
         restoreToolSelection('.dynamic-tool', saved.dynamicTools, saved.dynamicEnabled !== false);
         const isWs = persistedState.scanWorkspace === true;
         setValue('only-function', saved.onlyFunction || '');
@@ -524,10 +527,16 @@
         return Array.from(document.querySelectorAll(`${selector}:checked`)).map(element => element.value);
     }
 
-    function restoreToolSelection(selector, savedTools, enabled) {
+    function restoreToolSelection(selector, savedTools, enabled, fallbackSavedTools) {
         const selected = Array.isArray(savedTools) ? savedTools : null;
         document.querySelectorAll(selector).forEach(tool => {
-            tool.checked = selected ? selected.includes(tool.value) : enabled;
+            if (selected) {
+                const inSaved = selected.includes(tool.value);
+                const inFallback = Array.isArray(fallbackSavedTools) && fallbackSavedTools.includes(tool.value);
+                tool.checked = inSaved || inFallback;
+            } else {
+                tool.checked = enabled;
+            }
         });
     }
 

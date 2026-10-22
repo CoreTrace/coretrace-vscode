@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
-import { buildStackAnalyzerArgs, generateConfigFileIfNeeded } from '../ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded } from '../ctraceRunner';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -115,10 +115,37 @@ suite('CommandBuilder Test Suite', () => {
             assert.deepStrictEqual(content.stack_analyzer.only_dirs, ['src', 'lib']);
             assert.deepStrictEqual(content.stack_analyzer.exclude_dirs, ['vendor']);
             assert.strictEqual(content.stack_analyzer.include_stl, true);
-            assert.strictEqual(content.stack_analyzer.compdb_fast, true);
+            assert.deepStrictEqual(content.stack_analyzer.compdb_fast, true);
         } finally {
             if (fs.existsSync(tmpConfig)) { fs.unlinkSync(tmpConfig); }
         }
+    });
+
+    test('buildCtraceArgs includes ctrace_stack_analyzer in static tools', () => {
+        const dummyConfig: any = {
+            get: () => undefined
+        };
+        // All 5 static tools selected -> should emit --static
+        const allStatic = buildCtraceArgs({
+            reportFile: '/tmp/rep.json',
+            staticEnabled: true,
+            staticTools: ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'],
+            dynamicEnabled: false,
+            dynamicTools: []
+        }, dummyConfig);
+        assert.ok(allStatic.includes('--static'));
+        assert.ok(!allStatic.some(a => a.includes('--dyn')));
+
+        // Only stack analyzer selected under static tools -> should emit --invoke=ctrace_stack_analyzer
+        const onlyStack = buildCtraceArgs({
+            reportFile: '/tmp/rep.json',
+            staticEnabled: true,
+            staticTools: ['ctrace_stack_analyzer'],
+            dynamicEnabled: false,
+            dynamicTools: []
+        }, dummyConfig);
+        assert.ok(!onlyStack.includes('--static'));
+        assert.ok(onlyStack.includes('--invoke=ctrace_stack_analyzer'));
     });
 });
 

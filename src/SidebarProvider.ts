@@ -164,6 +164,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     const lucideUri = webview.asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, "media", "lucide.min.js")
     );
+    const logoUri = webview.asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, "media", "icon.png")
+    );
 
     // Use a nonce to only allow specific scripts to be run
     const nonce = getNonce();
@@ -172,21 +175,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link href="${styleMainUri}" rel="stylesheet">
-				<title>Ctrace Audit</title>
+				<title>CoreTrace</title>
 			</head>
 			<body>
 
 				<div class="sidebar">
 
-          <div id="dashboard-view" class="view-panel active" aria-label="Ctrace dashboard">
+          <div id="dashboard-view" class="view-panel active" aria-label="CoreTrace dashboard">
 
 					<!-- Header -->
 					<div class="header">
             <div class="header-topline">
-              <span class="header-title">Ctrace Audit</span>
+              <span class="header-title">CoreTrace</span>
               <button class="btn-settings" id="settings-btn" type="button" title="Open settings" aria-label="Open settings">
                 <i data-lucide="settings"></i>
               </button>
@@ -220,7 +223,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
             <div class="analysis-mode-row" aria-label="Analysis modes">
               <div class="analysis-mode-menu">
                 <button class="analysis-mode-toggle active" id="static-tools-btn" type="button" aria-haspopup="true" aria-expanded="false">
-                  <i data-lucide="shield-check"></i><span>Static</span><i data-lucide="chevron-down" class="mode-chevron"></i>
+                  <img src="${logoUri}" alt="CoreTrace" class="mode-logo"><span>Static</span><i data-lucide="chevron-down" class="mode-chevron"></i>
                 </button>
                 <div class="tool-dropdown" id="static-tools-menu" hidden>
                   <span class="tool-dropdown-title">Static tools</span>
@@ -228,6 +231,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                   <label><input type="checkbox" class="static-tool" value="flawfinder" checked><span>flawfinder</span></label>
                   <label><input type="checkbox" class="static-tool" value="ikos" checked><span>ikos</span></label>
                   <label><input type="checkbox" class="static-tool" value="tscancode" checked><span>tscancode</span></label>
+                  <label><input type="checkbox" class="static-tool" value="ctrace_stack_analyzer" checked><span>ctrace_stack_analyzer</span></label>
                 </div>
               </div>
               <div class="analysis-mode-menu">
@@ -236,7 +240,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 </button>
                 <div class="tool-dropdown" id="dynamic-tools-menu" hidden>
                   <span class="tool-dropdown-title">Dynamic tools</span>
-                  <label><input type="checkbox" class="dynamic-tool" value="ctrace_stack_analyzer" checked><span>ctrace_stack_analyzer</span></label>
+                  <label><input type="checkbox" class="dynamic-tool" value="coretrace-runtime-analyzer" checked><span>coretrace-runtime-analyzer</span></label>
                 </div>
               </div>
             </div>
