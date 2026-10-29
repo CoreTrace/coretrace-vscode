@@ -18,13 +18,22 @@ export class FindingsStore {
             ? value : null;
     }
 
-    public async save(report: SarifLog): Promise<void> {
+    public async save(report: SarifLog, savedAt = Date.now()): Promise<void> {
         const results: SarifResult[] = (report.runs ?? []).flatMap(run => run.results ?? []).map(result => {
             const location = result.locations?.[0]?.physicalLocation;
+            const props = result.properties;
+            const properties = props ? {
+                cwe: props.cwe,
+                tags: props.tags,
+                ctraceTool: props.ctraceTool,
+                ctraceFingerprint: props.ctraceFingerprint,
+                ctraceIgnored: props.ctraceIgnored,
+            } : undefined;
             return {
                 ruleId: result.ruleId,
                 level: result.level,
                 message: { text: result.message?.text ?? '' },
+                ...(properties ? { properties } : {}),
                 locations: location ? [{ physicalLocation: {
                     artifactLocation: { uri: location.artifactLocation?.uri },
                     region: { startLine: location.region?.startLine },
@@ -32,7 +41,7 @@ export class FindingsStore {
             };
         });
         await this.state.update(STORAGE_KEY, {
-            savedAt: Date.now(),
+            savedAt,
             report: {
                 version: '2.1.0',
                 runs: [{ tool: { driver: { name: 'CoreTrace' } }, results }],

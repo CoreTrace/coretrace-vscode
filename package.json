@@ -74,8 +74,95 @@
       {
         "command": "ctrace.focusStackFunction",
         "title": "CoreTrace: View Function in Stack Visualizer"
+      },
+      {
+        "command": "ctrace.ignoreFinding",
+        "title": "CoreTrace: Ignore Finding at Cursor"
+      },
+      {
+        "command": "ctrace.manageIgnoredFindings",
+        "title": "CoreTrace: Manage Ignored Findings"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CoreTrace",
+      "properties": {
+        "ctrace.compileCommandsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to compile_commands.json. When empty, it is auto-detected in the workspace root, the CMake Tools build directory, or build/."
+        },
+        "ctrace.analysis.timeoutSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "description": "Maximum time allowed to analyse a single file before ctrace is stopped."
+        },
+        "ctrace.workspace.incremental": {
+          "type": "boolean",
+          "default": true,
+          "description": "In workspace scans, only analyse files that changed since their last analysis and reuse the cached results of the others. Editing a header, compile_commands.json, the ctrace binary or the analysis options invalidates the cache. Run \"Clear Analysis Cache\" to force a full scan."
+        },
+        "ctrace.analysis.autoEntryPoints": {
+          "type": "boolean",
+          "default": false,
+          "description": "In single-file mode, pass every function of the file as an entry point."
+        },
+        "ctrace.analysis.stackLimit": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "default": "",
+          "description": "Stack size limit passed to ctrace as --stack-limit (e.g. 8192 or 8KiB)."
+        },
+        "ctrace.analysis.resourceCrossTu": {
+          "type": "string",
+          "enum": [
+            "default",
+            "on",
+            "off"
+          ],
+          "default": "default",
+          "description": "Inter-procedural resource analysis across translation units. \"default\" lets ctrace decide."
+        },
+        "ctrace.models.escapeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom escape model passed as --escape-model."
+        },
+        "ctrace.models.bufferModel": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom buffer model passed as --buffer-model."
+        },
+        "ctrace.models.resourceModel": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom resource model passed as --resource-model."
+        },
+        "ctrace.performance.compdbFast": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use the fast compilation-database mode of the stack analyzer."
+        },
+        "ctrace.performance.compileIrCacheDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory where the stack analyzer caches compiled IR."
+        },
+        "ctrace.cache.resourceSummaryDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory used to cache resource summaries between runs."
+        },
+        "ctrace.cache.memoryOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep resource summaries in memory only (no disk cache)."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

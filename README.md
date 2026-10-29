@@ -12,6 +12,8 @@ CoreTrace orchestrates multiple industry-standard analyzers and unifies their ou
 - **Dynamic & Stack Analysis**: Identifies stack overflows, infinite recursion risks, uninitialized variables, and large stack frame allocations (`ctrace_stack_analyzer`).
 - **Compiler Warnings**: Intercepts Clang/GCC compiler diagnostics and maps them into standard editor problems.
 - **Rich Dashboard**: Filter findings by severity (Errors, Warnings, Info), search by keyword, and click any item to jump directly to the source file and line.
+- **Problems Panel Integration**: Every finding is also a native VS Code diagnostic, tagged with the analyzer that produced it (e.g. `CoreTrace (cppcheck)`). Findings reported into a header by several source files are all kept.
+- **Cancellable Analyses**: Cancelling a run, or hitting the per-file timeout, stops `ctrace` and every analyzer it started — no orphaned processes.
 
 ### 2. 🛡️ In-Editor CodeLens: "Audit Function"
 Perform targeted security checks without scanning an entire file or project:
@@ -47,8 +49,19 @@ Precise C/C++ static analysis requires knowledge of compiler flags, include dire
 > cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 > ```
 
-### 6. Smart Caching
-Save time on repetitive scans. CoreTrace computes file content hashes and only re-analyzes C/C++ files that have changed since your last run, speeding up iterative development.
+### 6. Incremental Workspace Scans
+Save time on repetitive scans. CoreTrace computes file content hashes and only re-analyzes C/C++ files that have changed since their last analysis; the results of the other files are reused, even after restarting VS Code.
+- The cache is invalidated for every file when a header, `compile_commands.json`, the `ctrace` binary or the analysis options change, since any of these can change the result of an unmodified source file.
+- Run **Clear Analysis Cache** to force a full scan, or set `ctrace.workspace.incremental` to `false` to disable the cache.
+
+### 7. CWE Links
+When an analyzer maps a finding to a CWE, the diagnostic code in the Problems panel (e.g. `doubleFree · CWE-415`) links to its page on cwe.mitre.org, and the sidebar shows a clickable CWE badge. Diagnostics also name the analyzer that produced them and list the other analyzers that reported the same issue.
+
+### 8. Ignoring Findings
+Triage false positives without losing them:
+- Use the **CoreTrace: Ignore this finding** quick fix (lightbulb) on a diagnostic, or the **Ignore** button on a finding in the sidebar. You can give a reason.
+- Ignored findings are stored in `.coretrace-ignore.json` at the workspace root, so a team can commit it. A finding stays ignored when lines are added above it.
+- **CoreTrace: Manage Ignored Findings** lists them and restores the ones you select. Editing or deleting the file also updates the results immediately.
 
 ---
 
@@ -84,7 +97,67 @@ Access these commands from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | `ctrace.runAnalysis` | **Run Analysis** | Runs analysis on the currently active C/C++ file. |
 | `ctrace.runWorkspaceAnalysis` | **Run Workspace Analysis** | Analyzes all modified C/C++ files in the workspace. |
 | `ctrace.installDependencies` | **CoreTrace: Install Analyzers & Dependencies** | Installs or repairs external static analyzers (`cppcheck`, `flawfinder`, `ikos`, `tscancode`). |
-| `ctrace.clearAnalysisCache` | **Clear Analysis Cache** | Clears cached analysis hashes to force a clean re-scan. |
+| `ctrace.clearAnalysisCache` | **Clear Analysis Cache** | Clears cached analysis results to force a full re-scan. |
+| `ctrace.focusStackFunction` | **CoreTrace: View Function in Stack Visualizer** | Opens the Stack Visualizer on a function. |
+| `ctrace.ignoreFinding` | **CoreTrace: Ignore Finding at Cursor** | Adds the finding under the cursor to `.coretrace-ignore.json`. |
+| `ctrace.manageIgnoredFindings` | **CoreTrace: Manage Ignored Findings** | Lists ignored findings and restores the selected ones. |
+
+---
+
+## 🔧 Configuration
+
+All settings live under `ctrace.*` and can be edited in the Settings UI (search for **CoreTrace**) or in `.vscode/settings.json`.
+
+| Setting | Default | Description |
+|---|---|---|
+| `ctrace.workspace.incremental` | `true` | Reuse the results of unchanged files in workspace scans. |
+| `ctrace.analysis.timeoutSeconds` | `60` | Maximum time to analyse one file before `ctrace` is stopped. Raise it for large files or when IKOS is enabled. |
+| `ctrace.compileCommandsPath` | `""` | Path to `compile_commands.json`. Auto-detected when empty. |
+| `ctrace.analysis.autoEntryPoints` | `false` | In single-file mode, pass every function of the file as an entry point. |
+| `ctrace.analysis.stackLimit` | `""` | Stack size limit passed as `--stack-limit` (e.g. `8192`). |
+| `ctrace.analysis.resourceCrossTu` | `"default"` | Inter-procedural resource analysis across translation units (`default`, `on`, `off`). |
+| `ctrace.models.escapeModel` / `bufferModel` / `resourceModel` | `""` | Custom analysis models passed to `ctrace`. |
+| `ctrace.performance.compdbFast` | `false` | Fast compilation-database mode of the stack analyzer. |
+| `ctrace.performance.compileIrCacheDir` | `""` | Directory where the stack analyzer caches compiled IR. |
+| `ctrace.cache.resourceSummaryDir` | `""` | Directory used to cache resource summaries between runs. |
+| `ctrace.cache.memoryOnly` | `false` | Keep resource summaries in memory only. |
+
+Example `.coretrace-ignore.json` (created by the **Ignore** actions):
+
+```json
+{
+  "version": 1,
+  "ignored": [
+    {
+      "fingerprint": "2e1cde0b6dadad83fea0",
+      "ruleId": "doubleFree",
+      "file": "src/double_free.c",
+      "line": 10,
+      "message": "Memory pointed to by 'ptr' is freed twice.",
+      "reason": "false positive: ptr is reset by the macro",
+      "addedAt": "2026-10-29T11:16:21.971Z"
+    }
+  ]
+}
+```
+
+---
+
+## 🧑‍💻 Development
+
+```bash
+npm install
+```
+
+```bash
+npm run compile
+```
+
+```bash
+npm test
+```
+
+The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`). Press `F5` in VS Code to start an Extension Development Host with the extension loaded.
 
 ---
 

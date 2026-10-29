@@ -103,13 +103,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "execute-command": {
-            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction', 'ctrace.manageIgnoredFindings'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
             }
             vscode.commands.executeCommand(data.command, data.params);
             break;
+        }
+        case "ignore-finding": {
+          const fingerprint = typeof data.fingerprint === "string" && /^[0-9a-f]{8,64}$/.test(data.fingerprint) ? data.fingerprint : undefined;
+          if (!fingerprint) { break; }
+          const fileUri = await resolveReportedFileUri(data.path);
+          vscode.commands.executeCommand("ctrace.ignoreFinding", {
+            fingerprint,
+            ruleId: typeof data.ruleId === "string" ? data.ruleId : undefined,
+            file: fileUri?.fsPath ?? (typeof data.path === "string" ? data.path : ""),
+            line: Number.isFinite(data.line) ? Math.max(1, Math.floor(data.line)) : 1,
+            message: typeof data.message === "string" ? data.message : undefined,
+          });
+          break;
+        }
+        case "open-cwe": {
+          const match = typeof data.cwe === "string" ? data.cwe.match(/^CWE-(\d{1,5})$/) : null;
+          if (match) {
+            vscode.env.openExternal(vscode.Uri.parse(`https://cwe.mitre.org/data/definitions/${match[1]}.html`));
+          }
+          break;
         }
         case "pick-compile-commands": {
           const selected = await vscode.window.showOpenDialog({

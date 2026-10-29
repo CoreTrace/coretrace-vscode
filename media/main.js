@@ -76,6 +76,7 @@
     const persistedState = vscode.getState() || {};
     let analysisProfile = 'full';
     let findings = [];
+    let ignoredCount = 0;
     let currentStatus = 'ready';
     let isRunning = false;
     let isDownloading = false;
@@ -579,7 +580,7 @@
                 setRunning(true);
                 break;
             case 'analysis-result':
-                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt);
+                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt, msg.refresh === true);
                 break;
             case 'clear-results':
                 clearDisplayedResults();
@@ -687,17 +688,21 @@
         }
     }
 
-    function handleAnalysisResult(sarif, restored = false, savedAt) {
-        setRunning(false);
-        const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
-        setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
-        setProgress(100);
+    function handleAnalysisResult(sarif, restored = false, savedAt, refresh = false) {
+        // A refresh only re-applies the ignore list: keep the current status.
+        if (!refresh) {
+            setRunning(false);
+            const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
+            setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
+            setProgress(100);
+        }
 
         if (emptyState) { emptyState.style.display = 'none'; }
         if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
         if (vulnList) { vulnList.innerHTML = ''; }
 
         findings = [];
+        ignoredCount = 0;
         const seenFindings = new Set();
 
         if (sarif && sarif.runs) {
@@ -707,7 +712,11 @@
                     const key = `${res.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${res.message?.text || ''}`;
                     if (!seenFindings.has(key)) {
                         seenFindings.add(key);
-                        findings.push(res);
+                        if (res.properties && res.properties.ctraceIgnored === true) {
+                            ignoredCount++;
+                        } else {
+                            findings.push(res);
+                        }
                     }
                 });
             });
@@ -724,6 +733,7 @@
 
         if (count === 0 && vulnList) {
             vulnList.innerHTML = '<li class="info-item">No issues detected for the selected scope.</li>';
+            appendIgnoredNotice();
             if (typeof lucide !== 'undefined') { lucide.createIcons(); }
         }
 
@@ -1238,6 +1248,44 @@
         if (findings.length > 0 && filtered.length === 0 && vulnList) {
             vulnList.innerHTML = '<li class="info-item">No findings match the current filters.</li>';
         }
+        if (findings.length > 0) { appendIgnoredNotice(); }
+    }
+
+    function appendIgnoredNotice() {
+        if (!vulnList || ignoredCount === 0) { return; }
+        const li = document.createElement('li');
+        li.className = 'info-item ignored-notice';
+        const text = document.createElement('span');
+        text.textContent = `${ignoredCount} ignored finding${ignoredCount > 1 ? 's' : ''}`;
+        const manage = document.createElement('button');
+        manage.type = 'button';
+        manage.className = 'link-btn';
+        manage.textContent = 'Manage';
+        manage.addEventListener('click', () => {
+            vscode.postMessage({ type: 'execute-command', command: 'ctrace.manageIgnoredFindings' });
+        });
+        li.append(text, manage);
+        vulnList.appendChild(li);
+    }
+
+    /** Same normalisation as cweIds() in DiagnosticsManager.ts. */
+    function cweIds(properties) {
+        if (!properties) { return []; }
+        const raw = [].concat(properties.cwe === undefined ? [] : properties.cwe, Array.isArray(properties.tags) ? properties.tags : []);
+        const ids = [];
+        raw.forEach(value => {
+            let match = null;
+            if (typeof value === 'number') {
+                match = [String(value), String(value)];
+            } else if (typeof value === 'string') {
+                match = value.match(/^(?:external\/cwe\/)?cwe[-/]?0*(\d{1,5})$/i) || value.match(/^0*(\d{1,5})$/);
+            }
+            if (match) {
+                const id = `CWE-${Number(match[1])}`;
+                if (!ids.includes(id)) { ids.push(id); }
+            }
+        });
+        return ids;
     }
 
     function updateSummary(results) {
@@ -1313,6 +1361,46 @@
             ${locText ? `<div class="vuln-loc"><i data-lucide="map-pin"></i>${escapeHtml(locText)}</div>` : ''}
             <div class="vuln-msg">${escapeHtml(message)}</div>
         `;
+
+        const props = res.properties || {};
+        const cwes = cweIds(props);
+        const fingerprint = typeof props.ctraceFingerprint === 'string' ? props.ctraceFingerprint : '';
+        if (cwes.length > 0 || fingerprint || props.ctraceTool) {
+            const footer = document.createElement('div');
+            footer.className = 'vuln-footer';
+            cwes.forEach(cwe => {
+                const pill = document.createElement('button');
+                pill.type = 'button';
+                pill.className = 'vuln-cwe';
+                pill.textContent = cwe;
+                pill.title = `Open ${cwe} on cwe.mitre.org`;
+                pill.addEventListener('click', event => {
+                    event.stopPropagation();
+                    vscode.postMessage({ type: 'open-cwe', cwe });
+                });
+                footer.appendChild(pill);
+            });
+            if (typeof props.ctraceTool === 'string') {
+                const tool = document.createElement('span');
+                tool.className = 'vuln-tool';
+                tool.textContent = props.ctraceTool;
+                footer.appendChild(tool);
+            }
+            if (fingerprint) {
+                const ignore = document.createElement('button');
+                ignore.type = 'button';
+                ignore.className = 'vuln-ignore';
+                ignore.title = 'Ignore this finding (stored in .coretrace-ignore.json)';
+                ignore.setAttribute('aria-label', 'Ignore this finding');
+                ignore.innerHTML = '<i data-lucide="eye-off"></i><span>Ignore</span>';
+                ignore.addEventListener('click', event => {
+                    event.stopPropagation();
+                    vscode.postMessage({ type: 'ignore-finding', fingerprint, ruleId, path: filePath, line, message });
+                });
+                footer.appendChild(ignore);
+            }
+            li.appendChild(footer);
+        }
 
         li.addEventListener('click', () => {
             const safeLine = (typeof line === 'number' && isFinite(line)) ? Math.max(0, line - 1) : 0;

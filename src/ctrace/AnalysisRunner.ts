@@ -9,12 +9,16 @@ export interface RunResult {
     killed?: boolean;
 }
 
-const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds per file
+export const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds per file
+const MAX_BUFFER = 10 * 1024 * 1024;
 
 /**
  * Executes a shell command and returns stdout/stderr.
  * cwd should be the extension folder so ctrace can find its bundled tools.
  * Never rejects — errors are captured in the RunResult.
+ *
+ * The shell runs in its own process group so that a timeout or cancellation
+ * kills ctrace and the analyzers it spawned, not just the wrapping shell.
  */
 export function runCommand(
     command: string,
@@ -23,8 +27,15 @@ export function runCommand(
     timeoutMs: number = DEFAULT_TIMEOUT_MS
 ): Promise<RunResult> {
     return new Promise(resolve => {
-        let child: cp.ChildProcess | undefined;
+        if (token?.isCancellationRequested) {
+            resolve({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
+            return;
+        }
+
+        let child: cp.ChildProcess;
         let settled = false;
+        let stdout = '';
+        let stderr = '';
 
         const finish = (result: RunResult) => {
             if (settled) { return; }
@@ -34,22 +45,19 @@ export function runCommand(
             resolve(result);
         };
 
-        // Set when a kill is requested (timeout or cancellation). If the child
-        // process is spawned AFTER this flag goes true (e.g. during an async
-        // chmod call) it must be killed immediately upon creation.
-        let killRequested = false;
-
         const kill = (reason: string) => {
-            killRequested = true;
-            if (child && !child.killed) {
-                try {
-                    child.kill();
-                } catch {
-                    // Ignore kill errors if already terminated
-                }
-            }
-            finish({ stdout: '', stderr: reason, exitCode: null, killed: true });
+            killProcessTree(child);
+            finish({ stdout, stderr: stderr ? `${stderr}\n${reason}` : reason, exitCode: null, killed: true });
         };
+
+        try {
+            child = process.platform === 'win32'
+                ? cp.spawn(command, { cwd, shell: true, windowsHide: true })
+                : cp.spawn('/bin/sh', ['-c', command], { cwd, detached: true });
+        } catch (e) {
+            resolve({ stdout: '', stderr: 'Failed to execute command: ' + String(e), exitCode: 1 });
+            return;
+        }
 
         // Timeout guard to prevent infinite hanging
         const timer = setTimeout(() => {
@@ -61,27 +69,31 @@ export function runCommand(
             kill('Analysis cancelled by user.');
         });
 
-        if (token?.isCancellationRequested) {
-            finish({ stdout: '', stderr: 'Analysis cancelled by user.', exitCode: null, killed: true });
-            return;
-        }
-
-        try {
-            child = cp.exec(
-                command,
-                { cwd, maxBuffer: 10 * 1024 * 1024 },
-                (err, stdout, stderr) => {
-                    finish({
-                        stdout: stdout ?? '',
-                        stderr: stderr ?? '',
-                        exitCode: err?.code ?? null,
-                    });
-                }
-            );
-        } catch (e) {
-            clearTimeout(timer);
-            cancelListener?.dispose();
-            resolve({ stdout: '', stderr: 'Failed to execute command: ' + String(e), exitCode: 1 });
-        }
+        child.stdout?.on('data', (chunk: Buffer) => {
+            if (stdout.length < MAX_BUFFER) { stdout += chunk.toString(); }
+        });
+        child.stderr?.on('data', (chunk: Buffer) => {
+            if (stderr.length < MAX_BUFFER) { stderr += chunk.toString(); }
+        });
+        child.on('error', (err) => {
+            finish({ stdout, stderr: stderr + 'Failed to execute command: ' + err.message, exitCode: 1 });
+        });
+        child.on('close', (code) => {
+            finish({ stdout, stderr, exitCode: code });
+        });
     });
+}
+
+function killProcessTree(child: cp.ChildProcess): void {
+    if (child.pid === undefined || child.exitCode !== null) { return; }
+    try {
+        if (process.platform === 'win32') {
+            cp.spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+            // Negative pid targets the whole process group created by `detached`.
+            process.kill(-child.pid, 'SIGKILL');
+        }
+    } catch {
+        // Ignore kill errors if already terminated
+    }
 }

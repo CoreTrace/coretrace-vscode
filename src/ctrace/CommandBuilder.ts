@@ -91,11 +91,16 @@ function buildNativeCommand(
     params: string,
     compileCommands = false
 ): BuiltCommand {
-    const extraArgs = compileCommands ? ` --compile-commands "${inputFilePath}"` : '';
+    // Paths are single-quoted: a workspace file named e.g. `a$(cmd).c` must
+    // not be expanded by the shell.
+    const input = shellEscapeArg(inputFilePath);
+    const bin = shellEscapeArg(ctracePath);
+    const extraArgs = compileCommands ? ` --compile-commands ${input}` : '';
     const toolsDir = path.posix.join(os.homedir().replace(/\\/g, '/'), '.coretrace', 'tools');
-    const envExports = `export CORETRACE_CPPCHECK_BIN="/opt/homebrew/bin/cppcheck" CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
-    const cdTools = `cd "${toolsDir}" 2>/dev/null || true; `;
-    const command = `${cdTools}${envExports}chmod +x "${ctracePath}" && "${ctracePath}" --input "${inputFilePath}"${extraArgs} ${params}`;
+    const q = (p: string) => shellEscapeArg(`${toolsDir}/${p}`);
+    const envExports = `export CORETRACE_CPPCHECK_BIN='/opt/homebrew/bin/cppcheck' CORETRACE_IKOS_BIN=${q('ikos/src/ikos-build/bin/ikos')} CORETRACE_TSCANCODE_BIN=${q('tscancode/src/tscancode/trunk/tscancode')} CORETRACE_FLAWFINDER_SCRIPT=${q('flawfinder/src/flawfinder-build/flawfinder.py')} && `;
+    const cdTools = `cd ${shellEscapeArg(toolsDir)} 2>/dev/null || true; `;
+    const command = `${cdTools}${envExports}chmod +x ${bin} && ${bin} --input ${input}${extraArgs} ${params}`;
     return { command, tempFiles: [] };
 }
 

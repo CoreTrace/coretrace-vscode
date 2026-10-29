@@ -172,6 +172,15 @@ function configString(config: vscode.WorkspaceConfiguration | undefined, key: st
     return cleanValue(config?.get<string>(key));
 }
 
+/** Reads a boolean setting that may also be "on"/"off"/"default"; "default" means unset. */
+function configTriState(config: vscode.WorkspaceConfiguration | undefined, key: string): boolean | undefined {
+    const value = config?.get<unknown>(key);
+    if (typeof value === 'boolean') { return value; }
+    if (value === 'on') { return true; }
+    if (value === 'off') { return false; }
+    return undefined;
+}
+
 function configValue(config: vscode.WorkspaceConfiguration, key: string): string | number | undefined {
     const value = config.get<string | number>(key);
     if (typeof value === 'number') { return Number.isFinite(value) ? value : undefined; }
@@ -287,7 +296,7 @@ export function generateConfigFileIfNeeded(
     const compileIrCacheDir = configString(vscodeConfig, 'performance.compileIrCacheDir');
     const resourceCrossTu = uiState.resourceCrossTu !== undefined
         ? uiState.resourceCrossTu
-        : vscodeConfig?.get<boolean | undefined>('analysis.resourceCrossTu');
+        : configTriState(vscodeConfig, 'analysis.resourceCrossTu');
     const resourceSummaryDir = configString(vscodeConfig, 'cache.resourceSummaryDir');
     const resourceSummaryMemoryOnly = vscodeConfig?.get<boolean>('cache.memoryOnly', false);
 

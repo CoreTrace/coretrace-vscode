@@ -1020,6 +1020,76 @@ body {
     word-break: break-word;
 }
 
+.vuln-footer {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.vuln-cwe {
+    font: inherit;
+    font-size: 0.68em;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--coretrace-border);
+    background: var(--coretrace-surface-raised);
+    color: var(--coretrace-text);
+    cursor: pointer;
+}
+
+.vuln-cwe:hover {
+    border-color: var(--coretrace-red-bright);
+    text-decoration: underline;
+}
+
+.vuln-tool {
+    font-size: 0.68em;
+    color: var(--coretrace-muted);
+}
+
+.vuln-ignore {
+    font: inherit;
+    font-size: 0.68em;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--coretrace-muted);
+    cursor: pointer;
+}
+
+.vuln-ignore svg { width: 10px; height: 10px; }
+
+.vuln-ignore:hover {
+    color: var(--coretrace-text);
+    border-color: var(--coretrace-border);
+}
+
+.ignored-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.link-btn {
+    font: inherit;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--vscode-textLink-foreground);
+    cursor: pointer;
+}
+
+.link-btn:hover { text-decoration: underline; }
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {

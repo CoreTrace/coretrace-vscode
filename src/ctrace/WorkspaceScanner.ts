@@ -2,7 +2,8 @@ import * as crypto from 'crypto';
 import * as fs     from 'fs';
 import * as path   from 'path';
 import * as vscode from 'vscode';
-import type { SarifRun } from '../types/sarif';
+import type { SarifLog } from '../types/sarif';
+import type { StackReport } from '../types/stack';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -13,15 +14,17 @@ export interface WorkspaceFile {
     hash: string;
 }
 
-export interface ScanResult {
-    /** compile_commands.json path if found (in root, via CMake Tools config, or in /build/), else null */
-    compileCommandsPath: string | null;
-    /** All C/C++ source files found in the workspace */
-    files: WorkspaceFile[];
-    /** Subset of files whose content changed since the last scan */
-    changedFiles: WorkspaceFile[];
-    /** Cached SARIF runs for unchanged files, keyed by fsPath */
-    cachedSarifByFile: Map<string, SarifRun[]>;
+/** Everything a workspace scan publishes for one translation unit. */
+export interface CachedFileAnalysis {
+    sarif: SarifLog;
+    stack: StackReport | null;
+}
+
+export interface PartitionResult {
+    /** Files that are new, modified, or were analysed with other settings. */
+    changed: WorkspaceFile[];
+    /** Reusable results for the other files, keyed by fsPath. */
+    cached: Map<string, CachedFileAnalysis>;
 }
 
 // ─── File-hash cache ──────────────────────────────────────────────────────────
@@ -36,73 +39,144 @@ interface CachedFileMetadata {
     mtime: number;
 }
 
-/**
- * In-memory cache: fsPath → { hash, size, mtime }.
- * Lives for the extension session; cleared on `clearCache()`.
- * Stat-based cache greatly reduces I/O and CPU cost on large workspaces by
- * skipping expensive hash computation for files whose size and mtime haven't changed.
- */
+/** In-memory cache: fsPath → { hash, size, mtime }. */
 const _fileCache = new Map<string, CachedFileMetadata>();
 
-// ─── SARIF result cache ────────────────────────────────────────────────────────
+// ─── Analysis result cache ────────────────────────────────────────────────────
 
-/**
- * Cached SARIF runs for individual files, keyed by `fsPath\0hash`.
- * Allows us to preserve analysis results for unchanged files when using file-by-file mode.
- * When a file is skipped (unchanged), its cached SARIF is merged into the combined result.
- */
-const _sarifCache = new Map<string, SarifRun[]>();
-
-/**
- * Store SARIF runs for a file (keyed by its current hash).
- * Called after successfully analyzing a file to cache its results for future runs.
- */
-export function cacheSarifForFile(fsPath: string, fileHash: string, runs: SarifRun[]): void {
-    const key = `${fsPath}\0${fileHash}`;
-    _sarifCache.set(key, runs);
+interface AnalysisCacheEntry {
+    hash: string;
+    contextKey: string;
+    analysis: CachedFileAnalysis;
 }
 
+/** fsPath → last successful analysis. Persisted to `CACHE_FILE_NAME` in the workspace storage. */
+const _analysisCache = new Map<string, AnalysisCacheEntry>();
+const CACHE_FILE_NAME = 'workspace-scan-cache.v1.json';
+let _cacheFile: string | undefined;
+
 /**
- * Retrieve cached SARIF runs for a file by its fsPath and hash.
- * Returns undefined if no cached results exist for this exact file version.
+ * Loads the analysis cache persisted by a previous session. Call once on
+ * activation; without a storage directory the cache stays in memory only.
  */
-export function getCachedSarif(fsPath: string, fileHash: string): SarifRun[] | undefined {
-    const key = `${fsPath}\0${fileHash}`;
-    return _sarifCache.get(key);
+export async function initAnalysisCache(storageDir: string | undefined): Promise<void> {
+    _cacheFile = storageDir ? path.join(storageDir, CACHE_FILE_NAME) : undefined;
+    if (!_cacheFile) { return; }
+    try {
+        const entries = JSON.parse(await fs.promises.readFile(_cacheFile, 'utf8'));
+        if (!Array.isArray(entries)) { return; }
+        for (const [fsPath, entry] of entries) {
+            if (typeof fsPath === 'string' && typeof entry?.hash === 'string' &&
+                typeof entry?.contextKey === 'string' && Array.isArray(entry?.analysis?.sarif?.runs)) {
+                _analysisCache.set(fsPath, entry);
+            }
+        }
+    } catch {
+        // No cache yet, or an unreadable one: start from scratch.
+    }
 }
 
-export function clearCache(): void {
+/** Writes the analysis cache to disk, dropping entries for files that no longer exist. */
+export async function persistAnalysisCache(): Promise<void> {
+    if (!_cacheFile) { return; }
+    for (const fsPath of [..._analysisCache.keys()]) {
+        if (!await fileExists(fsPath)) { _analysisCache.delete(fsPath); }
+    }
+    try {
+        await fs.promises.mkdir(path.dirname(_cacheFile), { recursive: true });
+        await fs.promises.writeFile(_cacheFile, JSON.stringify([..._analysisCache]), 'utf8');
+    } catch (e) {
+        console.warn('[ctrace] Could not persist the workspace scan cache:', e);
+    }
+}
+
+export function cacheFileAnalysis(file: WorkspaceFile, contextKey: string, analysis: CachedFileAnalysis): void {
+    _analysisCache.set(file.fsPath, { hash: file.hash, contextKey, analysis });
+}
+
+export async function clearCache(): Promise<void> {
     _fileCache.clear();
-    _sarifCache.clear();
+    _analysisCache.clear();
+    if (_cacheFile) {
+        await fs.promises.unlink(_cacheFile).catch(() => { /* already gone */ });
+    }
 }
 
-// ─── Scanner ──────────────────────────────────────────────────────────────────
+/**
+ * Splits `files` into the ones that must be analysed again and the ones whose
+ * cached result is still valid: same content hash and same `contextKey`.
+ * Unreadable files are reported as changed so the analysis surfaces the error.
+ */
+export async function partitionFiles(files: string[], contextKey: string): Promise<PartitionResult> {
+    const changed: WorkspaceFile[] = [];
+    const cached = new Map<string, CachedFileAnalysis>();
+    for (const fsPath of files) {
+        const hash = await fileContentHash(fsPath);
+        const entry = _analysisCache.get(fsPath);
+        if (hash && entry && entry.hash === hash && entry.contextKey === contextKey) {
+            cached.set(fsPath, entry.analysis);
+        } else {
+            changed.push({ fsPath, hash: hash ?? '' });
+        }
+    }
+    return { changed, cached };
+}
 
-const C_CPP_GLOB = '**/*.{c,cpp,cc,cxx,c++,C}';
+/**
+ * Summarises everything besides a file's own content that can change its
+ * analysis result: the given values (ctrace arguments, generated config…) and
+ * the stat of the given files (binary, compile_commands.json) and of every
+ * header in the workspace. Header edits therefore invalidate the whole cache,
+ * since an unchanged .c file may include a changed header.
+ */
+export async function analysisContextKey(values: unknown[], dependencyFiles: (string | undefined)[]): Promise<string> {
+    const hash = crypto.createHash('sha1');
+    hash.update(JSON.stringify(values));
+    const headers = await vscode.workspace.findFiles(HEADER_GLOB, EXCLUDE_GLOB);
+    const statFiles = [...dependencyFiles.filter((f): f is string => Boolean(f)), ...headers.map(u => u.fsPath).sort()];
+    for (const file of statFiles) {
+        try {
+            const stat = await fs.promises.stat(file);
+            hash.update(`\0${file}\0${stat.size}\0${stat.mtimeMs}`);
+        } catch {
+            hash.update(`\0${file}\0missing`);
+        }
+    }
+    return hash.digest('hex');
+}
+
+const HEADER_GLOB = '**/*.{h,hh,hpp,hxx,h++,inl,inc,ipp,tpp}';
 /** Directories that should never be scanned (build artifacts, vendored code…) */
 const EXCLUDE_GLOB = '{**/node_modules/**,**/build/**,**/out/**,**/dist/**,**/.git/**,**/CMakeFiles/**,**/cmake-build-*/**}';
 
-/**
- * Scans all workspace folders for C/C++ source files and returns:
- *  - the path of `compile_commands.json` if present at any workspace root
- *  - the full list of discovered files with their current content hashes
- *  - only the files that are new or whose content changed since the last call
- *
- * Skips files it cannot read rather than throwing, so a single unreadable
- * file does not abort the entire scan.
- */
-export async function scanWorkspace(): Promise<ScanResult> {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders?.length) {
-        return { compileCommandsPath: null, files: [], changedFiles: [], cachedSarifByFile: new Map() };
+/** sha1 of the file content, reusing the previous hash when size and mtime are unchanged. */
+async function fileContentHash(fsPath: string): Promise<string | null> {
+    try {
+        const stat = await fs.promises.stat(fsPath);
+        const cached = _fileCache.get(fsPath);
+        if (cached && cached.size === stat.size && cached.mtime === stat.mtimeMs) {
+            return cached.hash;
+        }
+        const buf = await fs.promises.readFile(fsPath);
+        const hash = crypto.createHash('sha1').update(buf).digest('hex');
+        _fileCache.set(fsPath, { hash, size: stat.size, mtime: stat.mtimeMs });
+        return hash;
+    } catch {
+        return null;
     }
+}
 
-    // 1 — Look for compile_commands.json at every workspace root or build directory
-    let compileCommandsPath: string | null = null;
-    for (const folder of folders) {
+// ─── compile_commands.json ────────────────────────────────────────────────────
+
+/**
+ * Looks for compile_commands.json at every workspace root, in the CMake Tools
+ * build directory, or in `build/`. Cheap: does not touch the source files.
+ */
+export async function findCompileCommandsPath(): Promise<string | null> {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
         const rootCandidate = path.join(folder.uri.fsPath, 'compile_commands.json');
         const buildCandidate = path.join(folder.uri.fsPath, 'build', 'compile_commands.json');
-        
+
         // Also check CMake Tools build directory configuration if present
         let cmakeBuildCandidate: string | null = null;
         const config = vscode.workspace.getConfiguration('cmake', folder.uri);
@@ -114,97 +188,14 @@ export async function scanWorkspace(): Promise<ScanResult> {
         }
 
         if (await fileExists(rootCandidate)) {
-            compileCommandsPath = rootCandidate;
-            break;
+            return rootCandidate;
         } else if (cmakeBuildCandidate && await fileExists(cmakeBuildCandidate)) {
-            compileCommandsPath = cmakeBuildCandidate;
-            break;
+            return cmakeBuildCandidate;
         } else if (await fileExists(buildCandidate)) {
-            compileCommandsPath = buildCandidate;
-            break;
+            return buildCandidate;
         }
     }
-
-    // 2 — Find all C/C++ source files
-    const uris = await vscode.workspace.findFiles(C_CPP_GLOB, EXCLUDE_GLOB);
-    const files: WorkspaceFile[]   = [];
-    const changedFiles: WorkspaceFile[] = [];
-    const cachedSarifByFile = new Map<string, SarifRun[]>();
-
-    for (const uri of uris) {
-        const fsPath = uri.fsPath;
-        let hash: string;
-        let metadata: CachedFileMetadata;
-        
-        try {
-            // Cheap change detection: check file size and mtime first.
-            // Skip expensive hash computation if stats haven't changed.
-            const stat = await fs.promises.stat(fsPath);
-            const currentSize = stat.size;
-            const currentMtime = stat.mtimeMs;
-            const cached = _fileCache.get(fsPath);
-
-            if (cached && cached.size === currentSize && cached.mtime === currentMtime) {
-                // File stat hasn't changed — reuse cached hash without re-reading.
-                hash = cached.hash;
-            } else {
-                // File is new or modified — read and hash.
-                const buf = await fs.promises.readFile(fsPath);
-                hash = crypto.createHash('sha1').update(buf).digest('hex');
-            }
-
-            metadata = { hash, size: currentSize, mtime: currentMtime };
-        } catch {
-            // Unreadable file (permission error, race with deletion, …) — skip.
-            continue;
-        }
-
-        const entry: WorkspaceFile = { fsPath, hash };
-        files.push(entry);
-
-        const cached = _fileCache.get(fsPath);
-        if (!cached || cached.hash !== hash) {
-            changedFiles.push(entry);
-        } else {
-            // File is unchanged — try to retrieve its cached SARIF results
-            const cachedSarif = getCachedSarif(fsPath, hash);
-            if (cachedSarif) {
-                cachedSarifByFile.set(fsPath, cachedSarif);
-            } else {
-                // File hasn't changed but has no cached SARIF (e.g. previous run failed).
-                // Add it to changedFiles so we retry analysis.
-                changedFiles.push(entry);
-            }
-        }
-        _fileCache.set(fsPath, metadata);
-    }
-
-    // Remove stale cache entries for files that no longer exist
-    const currentPaths = new Set(files.map(f => f.fsPath));
-    const fileKeysToDelete: string[] = [];
-    for (const fsPath of _fileCache.keys()) {
-        if (!currentPaths.has(fsPath)) {
-            fileKeysToDelete.push(fsPath);
-        }
-    }
-    for (const fsPath of fileKeysToDelete) {
-        _fileCache.delete(fsPath);
-    }
-
-    // Also clean up SARIF cache entries for files that no longer exist
-    // SARIF cache keys are in format "fsPath\0hash"
-    const sarifKeysToDelete: string[] = [];
-    for (const cacheKey of _sarifCache.keys()) {
-        const fsPath = cacheKey.split('\0')[0];
-        if (!currentPaths.has(fsPath)) {
-            sarifKeysToDelete.push(cacheKey);
-        }
-    }
-    for (const cacheKey of sarifKeysToDelete) {
-        _sarifCache.delete(cacheKey);
-    }
-
-    return { compileCommandsPath, files, changedFiles, cachedSarifByFile };
+    return null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
