@@ -151,7 +151,9 @@ export function resolveResultFile(
         return vscode.Uri.parse(normalised).fsPath;
     }
     if (fs.existsSync(normalised)) {
-        return normalised;
+        // normaliseMountPath yields forward slashes on Windows: restore the
+        // native form so one file never ends up under two different keys.
+        return path.normalize(normalised);
     }
     if (workspaceRoot && fs.existsSync(path.resolve(workspaceRoot, normalised))) {
         return path.resolve(workspaceRoot, normalised);
