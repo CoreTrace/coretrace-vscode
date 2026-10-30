@@ -63,6 +63,15 @@ Triage false positives without losing them:
 - Ignored findings are stored in `.coretrace-ignore.json` at the workspace root, so a team can commit it. A finding stays ignored when lines are added above it.
 - **CoreTrace: Manage Ignored Findings** lists them and restores the ones you select. Editing or deleting the file also updates the results immediately.
 
+### 9. Stack Tree
+The **Stack Tree** tab shows how much stack your functions use, in a layout made for the narrow sidebar:
+- **Call tree**: an expandable tree of who calls what, heaviest callees first. A bar behind each value shows its share of the highest peak, and the heaviest call path is highlighted in red. The flame button jumps straight to it.
+- **Ranking**: every function sorted by peak stack.
+- **Filter** by function or file name: matches stay in place in the tree with the calls leading to them.
+- **Details**: selecting a function shows its local and peak stack, its callers and callees (click one to jump to it), and a link to the source.
+- **Keyboard**: arrow keys navigate and open rows, `Enter` opens the source (double-click works too).
+- Recursive calls end on a row marked `↻` instead of expanding forever.
+
 ---
 
 ## ⚙️ Requirements & Prerequisites

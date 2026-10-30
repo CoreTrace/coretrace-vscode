@@ -166,7 +166,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "npm run copy-lucide && node --check media/main.js && tsc -p ./",
+    "compile": "npm run copy-lucide && node --check media/main.js && node --check media/stackTree.js && tsc -p ./",
     "watch": "npm run copy-lucide && tsc -watch -p ./",
     "copy-lucide": "node scripts/copy-lucide.cjs",
     "test": "vscode-test",

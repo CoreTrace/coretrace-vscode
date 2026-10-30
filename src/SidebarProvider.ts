@@ -184,6 +184,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     const lucideUri = webview.asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, "media", "lucide.min.js")
     );
+    const stackTreeUri = webview.asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, "media", "stackTree.js")
+    );
     const logoUri = webview.asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, "media", "icon.png")
     );
@@ -480,43 +483,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 </div>
               </div>
 
-              <!-- Connected call graph -->
-              <div class="stack-graph-heading">
-                <div class="stack-section-title"><i data-lucide="workflow"></i><span>Call graph</span></div>
-                <span id="stack-graph-count" class="stack-graph-count">0 links</span>
-              </div>
-              <div class="stack-graph-toolbar" aria-label="Call graph controls">
-                <div class="stack-graph-modes" id="stack-graph-modes">
-                  <button id="stack-graph-mode-chains" class="stack-mode-btn active" type="button" title="Show connected call chains">Chains</button>
-                  <button id="stack-graph-mode-all" class="stack-mode-btn" type="button" title="Show all workspace functions">All</button>
+              <!-- Call tree -->
+              <label class="search-field" for="stack-search">
+                <i data-lucide="search"></i>
+                <input id="stack-search" type="search" placeholder="Filter by function or file…" autocomplete="off">
+              </label>
+              <div class="stack-tree-toolbar">
+                <div class="stack-view-modes" role="group" aria-label="Stack view">
+                  <button id="stack-view-tree" class="stack-mode-btn active" type="button" aria-pressed="true" title="Who calls what">Call tree</button>
+                  <button id="stack-view-ranking" class="stack-mode-btn" type="button" aria-pressed="false" title="All functions, heaviest first">Ranking</button>
                 </div>
-                <div class="stack-graph-zoom">
-                  <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
-                  <button id="stack-zoom-fit" type="button" aria-label="Fit to view" title="Adapter à la vue"><i data-lucide="scan"></i></button>
-                  <span id="stack-zoom-label" title="Cliquer pour réinitialiser (100%), double-clic pour adapter">100%</span>
-                  <button id="stack-zoom-in" type="button" aria-label="Zoom in" title="Zoom in"><i data-lucide="plus"></i></button>
+                <div class="stack-tree-actions" id="stack-tree-actions">
+                  <button id="stack-hot-path" type="button" aria-label="Show the heaviest call path" title="Show the heaviest call path"><i data-lucide="flame"></i></button>
+                  <button id="stack-expand-all" type="button" aria-label="Expand all" title="Expand all"><i data-lucide="chevrons-up-down"></i></button>
+                  <button id="stack-collapse-all" type="button" aria-label="Collapse all" title="Collapse all"><i data-lucide="chevrons-down-up"></i></button>
                 </div>
               </div>
-              <div id="stack-graph-container" class="stack-graph-container" aria-label="Function call graph">
+              <div class="stack-tree-header">
+                <span id="stack-tree-count">0 functions</span>
+                <span>Peak stack</span>
+              </div>
+              <div id="stack-tree" class="stack-tree" role="tree" aria-label="Function call tree">
                 <div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>
               </div>
-              <div class="stack-graph-resizer" id="stack-graph-resizer" title="Glisser pour agrandir la hauteur (Double-clic pour basculer)">
-                <div class="resizer-handle"></div>
-              </div>
-              <div id="stack-graph-inspector" class="stack-graph-inspector" hidden></div>
-              <div class="stack-graph-legend"><span><i class="legend-link"></i>Call</span><span><i class="legend-cycle"></i>Recursion</span><span>Click a node to inspect</span></div>
-
-              <!-- Functions Hierarchy Section -->
-              <div class="stack-section-title" style="margin-top: 14px;">
-                <i data-lucide="list-tree"></i><span>Function Stack Footprints</span>
-              </div>
-              <div class="findings-toolbar" style="margin-bottom: 8px;">
-                <label class="search-field" for="stack-search" style="width: 100%;">
-                  <i data-lucide="search"></i>
-                  <input id="stack-search" type="search" placeholder="Filter functions by name or file..." autocomplete="off">
-                </label>
-              </div>
-              <ul id="stack-fn-list" class="stack-fn-list"></ul>
+              <div id="stack-details" class="stack-details" hidden></div>
             </div>
 
 					</div>
@@ -536,6 +526,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 				</div>
 
 				<script nonce="${nonce}" src="${lucideUri}"></script>
+				<script nonce="${nonce}" src="${stackTreeUri}"></script>
 				<script nonce="${nonce}" src="${scriptUri}"></script>
 			</body>
 			</html>`;
