@@ -378,6 +378,7 @@
         setValue('smt-mode', saved.smtMode || 'single');
         setValue('smt-timeout-ms', saved.smtTimeoutMs || '');
         setValue('smt-rules', saved.smtRules || '');
+        setValue('compile-commands-path', saved.compileCommandsPath || '');
         setChecked('compdb-fast', saved.compdbFast === true);
         setChecked('include-compdb-deps', saved.includeCompdbDeps === true);
         setValue('compiler-extra-args', saved.compilerExtraArgs || '');
