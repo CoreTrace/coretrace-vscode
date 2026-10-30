@@ -39,6 +39,24 @@ export interface SarifResult {
     locations?: SarifLocation[];
     relatedLocations?: SarifLocation[];
     fixes?: SarifFix[];
+    partialFingerprints?: Record<string, string>;
+    properties?: SarifResultProperties;
+}
+
+/**
+ * Property bag of a result. `cwe` and `alsoReportedBy` come from ctrace; the
+ * `ctrace*` keys are added by the extension when results are published.
+ */
+export interface SarifResultProperties {
+    cwe?: string | number | (string | number)[];
+    tags?: string[];
+    alsoReportedBy?: { ruleId?: string; tool?: string }[];
+    /** Name of the analyzer that produced the result (SARIF run driver). */
+    ctraceTool?: string;
+    /** Stable id used by the ignore list (see FindingIgnoreList). */
+    ctraceFingerprint?: string;
+    ctraceIgnored?: boolean;
+    [key: string]: unknown;
 }
 
 export interface SarifMessage {

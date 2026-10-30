@@ -104,13 +104,17 @@ function parseIrReportText(text: string): StackFunction[] {
         const name = cleanFunctionName(nameToClean) || rawName;
         const localStack = parseInt(match[2], 10) || 0;
         const maxStack = parseInt(match[3], 10) || localStack;
-        const isRecursive = text.includes(`recursive or mutually recursive function detected`) && (text.includes(rawName) || text.includes(name));
+
+        const nextFunction = text.indexOf('Function:', functionRegex.lastIndex);
+        const block = text.slice(match.index, nextFunction < 0 ? undefined : nextFunction);
+        const isRecursive = block.includes('recursive or mutually recursive function detected');
 
         list.push({
             name,
             localStack,
             maxStack,
             isRecursive,
+            exceedsLimit: /exceeds limit of \d+ bytes/.test(block),
         });
     }
 

@@ -2,6 +2,27 @@ import * as assert from 'assert';
 import { parseStackReport, mergeStackReports } from '../ctrace/StackParser';
 
 suite('StackParser Test Suite', () => {
+    test('flags only the recursive functions in a plaintext report', () => {
+        const report = [
+            'Function: loop ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 32 bytes',
+            '\t[ !Info! ] recursive or mutually recursive function detected', '',
+            'Function: plain ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 16 bytes', '',
+        ].join('\n');
+        const parsed = parseStackReport(report);
+        assert.deepStrictEqual(parsed?.functions.map(fn => [fn.name, fn.isRecursive]), [['loop', true], ['plain', false]]);
+    });
+
+    test('flags only the functions over the stack limit in a plaintext report', () => {
+        const report = [
+            'Mode: IR', '',
+            'Function: big ', '\tlocal stack: 80 bytes', '\tmax stack (including callees): 80 bytes',
+            '\tat line 5, column 46', '\t[!!!Error] potential stack overflow: exceeds limit of 64 bytes', '', '',
+            'Function: small ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 16 bytes', '',
+        ].join('\n');
+        const parsed = parseStackReport(report);
+        assert.deepStrictEqual(parsed?.functions.map(fn => [fn.name, fn.exceedsLimit]), [['big', true], ['small', false]]);
+    });
+
     test('parses JSON stack analyzer report with functions and stack sizes', () => {
         const jsonReport = JSON.stringify({
             meta: {

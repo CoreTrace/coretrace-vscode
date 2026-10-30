@@ -5,14 +5,25 @@ import * as path from 'path';
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
 import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
-import { runCommand } from './ctrace/AnalysisRunner';
-import { parseSarifOutput, countResults } from './ctrace/SarifParser';
-import { updateDiagnostics } from './ctrace/DiagnosticsManager';
+import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
+import { parseSarifOutput } from './ctrace/SarifParser';
+import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
 import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
-import { clearCache, scanWorkspace as runWorkspaceScan } from './ctrace/WorkspaceScanner';
+import {
+    clearCache,
+    findCompileCommandsPath,
+    initAnalysisCache,
+    persistAnalysisCache,
+    partitionFiles,
+    analysisContextKey,
+    cacheFileAnalysis,
+    WorkspaceFile,
+} from './ctrace/WorkspaceScanner';
+import { FindingIgnoreList, relativeFindingPath, IGNORE_FILE_NAME } from './ctrace/FindingIgnoreList';
+import { IgnoreFindingCodeActionProvider } from './codelens/IgnoreFindingCodeActionProvider';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
 import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
@@ -53,6 +64,53 @@ export function activate(context: vscode.ExtensionContext) {
     // ── Diagnostics collection ───────────────────────────────────────────────
     const diagnosticCollection = vscode.languages.createDiagnosticCollection('ctrace');
     context.subscriptions.push(diagnosticCollection);
+
+    // ── Ignored findings ─────────────────────────────────────────────────────
+    const ignoreList = new FindingIgnoreList(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+    context.subscriptions.push(ignoreList);
+    const isIgnored = (fingerprint: string) => ignoreList.has(fingerprint);
+    for (const language of ['c', 'cpp', 'objective-c', 'objective-cpp']) {
+        context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
+            { language },
+            new IgnoreFindingCodeActionProvider(),
+            { providedCodeActionKinds: IgnoreFindingCodeActionProvider.providedCodeActionKinds }
+        ));
+    }
+
+    // SARIF of the latest analysis, per analysed file, so that ignoring a
+    // finding can refresh the Problems panel and the sidebar without a rerun.
+    let lastSarifByFile = new Map<string, any>();
+    let republishPending = false;
+
+    async function republishFindings(): Promise<void> {
+        if (isRunning) {
+            republishPending = true;
+            return;
+        }
+        if (lastSarifByFile.size > 0) {
+            clearDiagnostics(diagnosticCollection);
+            for (const [fp, sarif] of lastSarifByFile) {
+                updateDiagnostics(sarif, diagnosticCollection, fp, false, { isIgnored });
+            }
+            const merged = mergeSarifDocs([...lastSarifByFile.values()]);
+            await findingsStore.save(merged).catch(() => { /* best effort */ });
+            sidebarProvider.postMessage({ type: 'analysis-result', data: merged, refresh: true });
+            return;
+        }
+        // Results restored from a previous session: only the sidebar shows them.
+        const snapshot = findingsStore.get();
+        if (!snapshot) { return; }
+        for (const result of snapshot.report.runs.flatMap(run => run.results ?? [])) {
+            const fingerprint = result.properties?.ctraceFingerprint;
+            if (fingerprint) { result.properties = { ...result.properties, ctraceIgnored: ignoreList.has(fingerprint) }; }
+        }
+        await findingsStore.save(snapshot.report, snapshot.savedAt).catch(() => { /* best effort */ });
+        sidebarProvider.postMessage({ type: 'analysis-result', data: snapshot.report, restored: true, savedAt: snapshot.savedAt, refresh: true });
+    }
+    context.subscriptions.push(ignoreList.onDidChange(() => { void republishFindings(); }));
+
+    // Results of unchanged files from previous workspace scans.
+    const analysisCacheReady = initAnalysisCache(context.storageUri?.fsPath);
 
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
     // Guard against concurrent invocations (e.g. a second postMessage arriving
@@ -233,18 +291,23 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (!effectiveUiState.compileCommandsPath) {
                 try {
-                    const scanRes = await runWorkspaceScan();
-                    if (scanRes.compileCommandsPath) {
+                    const compileCommandsPath = await findCompileCommandsPath();
+                    if (compileCommandsPath) {
                         effectiveUiState = {
                             ...effectiveUiState,
-                            compileCommandsPath: scanRes.compileCommandsPath,
+                            compileCommandsPath,
                         };
-                        output.appendLine(`[ctrace] Auto-detected compilation database: ${scanRes.compileCommandsPath}`);
+                        output.appendLine(`[ctrace] Auto-detected compilation database: ${compileCommandsPath}`);
                     }
                 } catch (e) {
                     console.warn('[ctrace] Could not auto-detect compilation database:', e);
                 }
             }
+
+            const timeoutSeconds = ctraceConfig.get<number>('analysis.timeoutSeconds', DEFAULT_TIMEOUT_MS / 1000);
+            const timeoutMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+                ? timeoutSeconds * 1000
+                : DEFAULT_TIMEOUT_MS;
 
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);
@@ -268,23 +331,68 @@ export function activate(context: vscode.ExtensionContext) {
                     cancellable: true,
                 },
                 async (progress, token) => {
-                    const step = filesToAnalyze.length > 0 ? 100 / filesToAnalyze.length : 100;
                     const allSarif: any[] = [];
                     const allStackReports: any[] = [];
+                    lastSarifByFile = new Map();
 
                     // Clear once before the loop so workspace-mode doesn't wipe
                     // previously collected diagnostics on every file.
                     if (scanWorkspace) {
-                        diagnosticCollection.clear();
+                        clearDiagnostics(diagnosticCollection);
                         StackManager.instance.clear();
                     }
 
                     const configPath = createConfigPath(extensionPath);
                     const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
 
+                    const publishStack = (stackReport: any) => {
+                        allStackReports.push(stackReport);
+                        const unifiedStack = mergeStackReports(allStackReports);
+                        if (unifiedStack) {
+                            StackManager.instance.updateStackData(unifiedStack);
+                            sidebarProvider.postMessage({
+                                type: 'stack-data',
+                                data: unifiedStack,
+                            });
+                        }
+                    };
+
+                    // ── Incremental workspace scan ───────────────────────────
+                    // Reuse the results of files whose content, headers and
+                    // ctrace invocation are unchanged since they were analysed.
+                    const incremental = scanWorkspace && ctraceConfig.get<boolean>('workspace.incremental', true);
+                    let contextKey = '';
+                    let queue: WorkspaceFile[] = filesToAnalyze.map(fsPath => ({ fsPath, hash: '' }));
+                    let cachedCount = 0;
+                    if (incremental) {
+                        await analysisCacheReady;
+                        const placeholderState = {
+                            ...effectiveUiState,
+                            reportFile: '<report>',
+                            configFile: hasConfig ? '<config>' : effectiveUiState.configFile,
+                        };
+                        let configContent = '';
+                        try { configContent = hasConfig ? fs.readFileSync(configPath, 'utf8') : ''; } catch { /* ignore */ }
+                        contextKey = await analysisContextKey(
+                            [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs],
+                            [ctracePath, effectiveUiState.compileCommandsPath, effectiveUiState.configFile]
+                        );
+                        const partition = await partitionFiles(filesToAnalyze, contextKey);
+                        queue = partition.changed;
+                        cachedCount = partition.cached.size;
+                        for (const [fp, cached] of partition.cached) {
+                            allSarif.push(cached.sarif);
+                            lastSarifByFile.set(fp, cached.sarif);
+                            updateDiagnostics(cached.sarif, diagnosticCollection, fp, false, { isIgnored });
+                            if (cached.stack && cached.stack.functions.length > 0) { publishStack(cached.stack); }
+                        }
+                        output.appendLine(`[ctrace] Incremental scan: ${queue.length} file(s) to analyse, ${cachedCount} unchanged file(s) reused from cache.`);
+                    }
+                    const step = queue.length > 0 ? 100 / queue.length : 100;
+
                     let hadToolExecutionWarning = false;
                     try {
-                        for (let i = 0; i < filesToAnalyze.length; i++) {
+                        for (let i = 0; i < queue.length; i++) {
                             if (token.isCancellationRequested) {
                                 output.appendLine('[ctrace] Analysis cancelled by user.');
                                 vscode.window.showInformationMessage('Ctrace analysis cancelled.');
@@ -297,20 +405,21 @@ export function activate(context: vscode.ExtensionContext) {
                                 break;
                             }
 
-                            const fp = filesToAnalyze[i];
+                            const fp = queue[i].fsPath;
                             const fileName = path.basename(fp);
+                            const cachedSuffix = cachedCount > 0 ? ` (${cachedCount} unchanged)` : '';
 
-                            if (filesToAnalyze.length > 1) {
+                            if (queue.length > 1 || cachedCount > 0) {
                                 progress.report({
-                                    message: `(${i + 1}/${filesToAnalyze.length}) ${fileName}`,
+                                    message: `(${i + 1}/${queue.length}) ${fileName}${cachedSuffix}`,
                                     increment: step,
                                 });
                             }
                             sidebarProvider._view?.webview.postMessage({
                                 type: 'analysis-progress',
                                 message: `Analysing ${fileName}`,
-                                detail: `File ${i + 1} of ${filesToAnalyze.length}`,
-                                percent: Math.round((i / filesToAnalyze.length) * 100),
+                                detail: `File ${i + 1} of ${queue.length}${cachedSuffix}`,
+                                percent: Math.round((i / queue.length) * 100),
                             });
 
                             // Build & run command for this file.
@@ -324,7 +433,7 @@ export function activate(context: vscode.ExtensionContext) {
                             tryDelete(reportPath);
 
                             output.appendLine(`\n${'─'.repeat(60)}`);
-                            output.appendLine(`[${i + 1}/${filesToAnalyze.length}] ${fileName}`);
+                            output.appendLine(`[${i + 1}/${queue.length}] ${fileName}`);
                             output.appendLine(`$ ${command}`);
                             if (hasConfig) {
                                 try {
@@ -332,7 +441,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 } catch {}
                             }
 
-                            const result = await runCommand(command, extensionPath, token);
+                            const result = await runCommand(command, extensionPath, token, timeoutMs);
                             const { stdout, stderr, exitCode, killed } = result;
 
                             if (stdout) { output.appendLine(stdout); }
@@ -352,7 +461,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     break;
                                 }
                                 output.appendLine(`[timed out] ${fileName}`);
-                                vscode.window.showWarningMessage(`Analysis of ${fileName} timed out (60s).`);
+                                vscode.window.showWarningMessage(`Analysis of ${fileName} timed out (${timeoutMs / 1000}s). You can raise "ctrace.analysis.timeoutSeconds" in the settings.`);
                             }
 
                             let reportContent = '';
@@ -366,6 +475,7 @@ export function activate(context: vscode.ExtensionContext) {
                             tryDelete(reportPath);
 
                             // Extract and publish stack analyzer data
+                            let fileStack: any = null;
                             try {
                                 let sourceCode: string | undefined;
                                 try {
@@ -392,7 +502,7 @@ export function activate(context: vscode.ExtensionContext) {
                                             }, ctraceConfig);
                                             const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs));
                                             try {
-                                                const stackRes = await runCommand(stackCmd, extensionPath, token);
+                                                const stackRes = await runCommand(stackCmd, extensionPath, token, timeoutMs);
                                                 const stackOut = (stackRes.stdout || '') + (stackRes.stderr || '');
                                                 stackReport = parseStackReport(stackOut, sourceCode);
                                             } finally {
@@ -405,15 +515,8 @@ export function activate(context: vscode.ExtensionContext) {
                                 }
 
                                 if (stackReport && stackReport.functions.length > 0) {
-                                    allStackReports.push(stackReport);
-                                    const unifiedStack = mergeStackReports(allStackReports);
-                                    if (unifiedStack) {
-                                        StackManager.instance.updateStackData(unifiedStack);
-                                        sidebarProvider.postMessage({
-                                            type: 'stack-data',
-                                            data: unifiedStack,
-                                        });
-                                    }
+                                    fileStack = stackReport;
+                                    publishStack(stackReport);
                                 }
                             } catch (e) {
                                 console.warn('[StackAnalyzer] Error parsing stack data:', e);
@@ -421,7 +524,11 @@ export function activate(context: vscode.ExtensionContext) {
                             if (sarif) {
                                 normalizeSarifArtifactUris(sarif, fp);
                                 allSarif.push(sarif);
-                                updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace);
+                                lastSarifByFile.set(fp, sarif);
+                                updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace, { isIgnored });
+                                if (incremental && !killed && queue[i].hash) {
+                                    cacheFileAnalysis(queue[i], contextKey, { sarif, stack: fileStack });
+                                }
                             } else if (!scanWorkspace) {
                                 // Single-file mode: report parse failure immediately
                                 handleNoResults(stdout, stderr, exitCode);
@@ -455,7 +562,7 @@ export function activate(context: vscode.ExtensionContext) {
                         }
 
                         const merged = mergeSarifDocs(allSarif);
-                        const total = countResults(merged);
+                        const total = countVisibleResults(merged);
 
                         try {
                             await findingsStore.save(merged);
@@ -467,9 +574,9 @@ export function activate(context: vscode.ExtensionContext) {
                             data: merged,
                         });
 
-                        const filesSuffix = scanWorkspace && filesToAnalyze.length > 1
+                        const filesSuffix = (scanWorkspace && filesToAnalyze.length > 1
                             ? ` across ${filesToAnalyze.length} files`
-                            : '';
+                            : '') + (cachedCount > 0 ? ` (${cachedCount} unchanged, reused from cache)` : '');
 
                         if (total > 0) {
                             vscode.window.showInformationMessage(
@@ -502,8 +609,15 @@ export function activate(context: vscode.ExtensionContext) {
                         if (hasConfig) {
                             tryDelete(configPath);
                         }
+                        if (incremental) {
+                            void persistAnalysisCache();
+                        }
                         isRunning = false;
                         sidebarProvider.postMessage({ type: 'analysis-done' });
+                        if (republishPending) {
+                            republishPending = false;
+                            void republishFindings();
+                        }
                     }
                 }
             );
@@ -521,11 +635,85 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.clearAnalysisCache', async () => {
-            clearCache();
+            await clearCache();
             StackManager.instance.clear();
             await findingsStore.clear();
             sidebarProvider.postMessage({ type: 'clear-results' });
             vscode.window.showInformationMessage('Ctrace analysis cache and saved results cleared.');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.ignoreFinding', async (arg?: Partial<FindingRef>) => {
+            const finding = isFindingRef(arg) ? arg : await pickFindingAtCursor();
+            if (!finding) { return; }
+            const reason = await vscode.window.showInputBox({
+                title: `Ignore ${finding.ruleId ?? 'finding'}`,
+                prompt: `Why is this finding ignored? (optional) — stored in ${IGNORE_FILE_NAME}`,
+                placeHolder: 'e.g. false positive: the buffer size is checked by the caller',
+            });
+            if (reason === undefined) { return; }
+            try {
+                await ignoreList.add({
+                    fingerprint: finding.fingerprint,
+                    ruleId: finding.ruleId,
+                    file: relativeFindingPath(finding.file, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
+                    line: finding.line,
+                    message: finding.message,
+                    ...(reason.trim() ? { reason: reason.trim() } : {}),
+                });
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Could not ignore the finding: ${e?.message ?? e}`);
+                return;
+            }
+            const action = await vscode.window.showInformationMessage(
+                `Finding ignored. It is listed in ${IGNORE_FILE_NAME}.`,
+                'Undo'
+            );
+            if (action === 'Undo') {
+                await ignoreList.remove([finding.fingerprint]);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.manageIgnoredFindings', async () => {
+            const entries = ignoreList.list();
+            if (entries.length === 0) {
+                vscode.window.showInformationMessage('No CoreTrace finding is ignored in this workspace.');
+                return;
+            }
+            const openFileButton: vscode.QuickInputButton = {
+                iconPath: new vscode.ThemeIcon('go-to-file'),
+                tooltip: `Open ${IGNORE_FILE_NAME}`,
+            };
+            const quickPick = vscode.window.createQuickPick<vscode.QuickPickItem & { fingerprint: string }>();
+            quickPick.title = 'Ignored CoreTrace findings — select the ones to restore';
+            quickPick.canSelectMany = true;
+            quickPick.matchOnDetail = true;
+            quickPick.buttons = [openFileButton];
+            quickPick.items = entries.map(entry => ({
+                fingerprint: entry.fingerprint,
+                label: entry.ruleId ?? 'Finding',
+                description: entry.file ? `${entry.file}${entry.line ? `:${entry.line}` : ''}` : undefined,
+                detail: [entry.message, entry.reason ? `Reason: ${entry.reason}` : ''].filter(Boolean).join(' — '),
+            }));
+            quickPick.onDidTriggerButton(async () => {
+                quickPick.hide();
+                if (ignoreList.filePath) {
+                    await vscode.window.showTextDocument(vscode.Uri.file(ignoreList.filePath));
+                }
+            });
+            quickPick.onDidAccept(async () => {
+                const selected = quickPick.selectedItems.map(item => item.fingerprint);
+                quickPick.hide();
+                if (selected.length > 0) {
+                    await ignoreList.remove(selected);
+                    vscode.window.showInformationMessage(`${selected.length} finding${selected.length > 1 ? 's' : ''} restored.`);
+                }
+            });
+            quickPick.onDidHide(() => quickPick.dispose());
+            quickPick.show();
         })
     );
 
@@ -587,6 +775,42 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() { }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function isFindingRef(value: unknown): value is FindingRef {
+    const v = value as Partial<FindingRef> | undefined;
+    return typeof v?.fingerprint === 'string' && v.fingerprint.length > 0 &&
+        typeof v.file === 'string' && Number.isFinite(v.line);
+}
+
+/** Used when "Ignore finding" is run from the Command Palette. */
+async function pickFindingAtCursor(): Promise<FindingRef | undefined> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showInformationMessage('Place the cursor on a CoreTrace finding to ignore it.');
+        return undefined;
+    }
+    const uri = editor.document.uri;
+    const findings = vscode.languages.getDiagnostics(uri)
+        .filter(d => d.source?.startsWith('CoreTrace') && d.range.contains(editor.selection.active))
+        .map(d => getFindingForDiagnostic(uri, d))
+        .filter((f): f is FindingRef => f !== undefined);
+    if (findings.length === 0) {
+        vscode.window.showInformationMessage('There is no CoreTrace finding at the cursor.');
+        return undefined;
+    }
+    if (findings.length === 1) { return findings[0]; }
+    const picked = await vscode.window.showQuickPick(
+        findings.map(f => ({ label: f.ruleId ?? 'Finding', detail: f.message, finding: f })),
+        { title: 'Which finding do you want to ignore?' }
+    );
+    return picked?.finding;
+}
+
+function countVisibleResults(sarif: any): number {
+    if (!Array.isArray(sarif?.runs)) { return 0; }
+    return sarif.runs.reduce((sum: number, run: any) =>
+        sum + (run.results ?? []).filter((r: any) => r.properties?.ctraceIgnored !== true).length, 0);
+}
 
 function mergeSarifDocs(sarifList: any[]): any {
     if (!sarifList.length) { return null; }

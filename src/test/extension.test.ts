@@ -39,5 +39,7 @@ suite('Extension Activation & Integration Test Suite', function () {
         assert.ok(commands.includes('ctrace.clearAnalysisCache'), 'Command ctrace.clearAnalysisCache is missing');
         assert.ok(commands.includes('ctrace.installDependencies'), 'Command ctrace.installDependencies is missing');
         assert.ok(commands.includes('ctrace.focusStackFunction'), 'Command ctrace.focusStackFunction is missing');
+        assert.ok(commands.includes('ctrace.ignoreFinding'), 'Command ctrace.ignoreFinding is missing');
+        assert.ok(commands.includes('ctrace.manageIgnoredFindings'), 'Command ctrace.manageIgnoredFindings is missing');
     });
 });

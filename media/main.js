@@ -19,23 +19,24 @@
     const stackPeakVal = document.getElementById('stack-peak-val');
     const stackRecursionVal = document.getElementById('stack-recursion-val');
     const stackFunctionsVal = document.getElementById('stack-functions-val');
-    const stackGraphContainer = document.getElementById('stack-graph-container');
-    const stackGraphInspector = document.getElementById('stack-graph-inspector');
-    const stackGraphCount = document.getElementById('stack-graph-count');
-    const stackGraphModeChains = document.getElementById('stack-graph-mode-chains');
-    const stackGraphModeAll = document.getElementById('stack-graph-mode-all');
-    let stackGraphMode = 'chains';
-    const stackZoomOut = document.getElementById('stack-zoom-out');
-    const stackZoomFit = document.getElementById('stack-zoom-fit');
-    const stackZoomIn = document.getElementById('stack-zoom-in');
-    const stackZoomLabel = document.getElementById('stack-zoom-label');
-    const stackGraphResizer = document.getElementById('stack-graph-resizer');
-    const stackFnList = document.getElementById('stack-fn-list');
+    const stackTreeEl = document.getElementById('stack-tree');
+    const stackDetails = document.getElementById('stack-details');
+    const stackTreeCount = document.getElementById('stack-tree-count');
+    const stackViewTree = document.getElementById('stack-view-tree');
+    const stackViewRanking = document.getElementById('stack-view-ranking');
+    const stackTreeActions = document.getElementById('stack-tree-actions');
+    const stackHotPath = document.getElementById('stack-hot-path');
+    const stackExpandAll = document.getElementById('stack-expand-all');
+    const stackCollapseAll = document.getElementById('stack-collapse-all');
     const stackSearch = document.getElementById('stack-search');
-    let currentStackReport = null;
-    let graphSelectedId = null;
-    let graphZoom = 0.85;
-    let graphPan = null;
+    const stackTreeLib = window.CoreTraceStackTree;
+    let stackModel = null;
+    let stackView = 'tree';
+    let stackExpanded = new Set();
+    // Until the user opens or closes a row, each report of a workspace scan
+    // gets the default layout; afterwards their layout is kept.
+    let stackTreeTouched = false;
+    let stackSelectedKey = null;
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
     const statusDetail = document.getElementById('status-detail');
@@ -68,14 +69,25 @@
     const crossTuCb = document.getElementById('resource-cross-tu');
     const autoEntryGroup = document.getElementById('auto-entry-points-group');
     const autoEntryCb = document.getElementById('auto-entry-points');
-    const autoEntryHint = document.getElementById('auto-entry-points-hint');
     const smtSection = document.getElementById('smt-section');
     const profileToggle = document.getElementById('analysis-profile-toggle');
     const profileLabel = document.getElementById('analysis-profile-label');
     const ikosCb = document.querySelector('.static-tool[value="ikos"]');
+    const settingsSearch = document.getElementById('settings-search');
+    const settingsBadge = document.getElementById('settings-badge');
+    const settingsNoMatch = document.getElementById('settings-no-match');
+    const resetSettingsBtn = document.getElementById('reset-settings');
+    const resetSettingsLabel = document.getElementById('reset-settings-label');
+    const openVsCodeSettingsBtn = document.getElementById('open-vscode-settings');
+    const smtFields = document.getElementById('smt-fields');
+    const smtSecondaryGroup = document.getElementById('smt-secondary-group');
+    const smtModeSelect = document.getElementById('smt-mode');
     const persistedState = vscode.getState() || {};
+    // While a search forces sections open: the ones to reopen afterwards.
+    let settingsSearchRestore = null;
     let analysisProfile = 'full';
     let findings = [];
+    let ignoredCount = 0;
     let currentStatus = 'ready';
     let isRunning = false;
     let isDownloading = false;
@@ -202,7 +214,9 @@
                 : (lastFileName || 'Open a C/C++ file to analyse');
         }
         [onlyDirGroup, excludeDirGroup].forEach(group => {
-            if (group) { group.classList.toggle('is-hidden', !workspace); }
+            if (!group) { return; }
+            group.classList.toggle('is-disabled', !workspace);
+            group.querySelector('input').disabled = !workspace;
         });
         if (!workspace && modeChanged) {
             setValue('only-dir', '');
@@ -215,7 +229,6 @@
         if (crossTuGroup) { crossTuGroup.classList.toggle('is-disabled', !workspace); }
         if (autoEntryCb) { autoEntryCb.disabled = workspace; }
         if (autoEntryGroup) { autoEntryGroup.classList.toggle('is-disabled', workspace); }
-        if (autoEntryHint) { autoEntryHint.hidden = !workspace; }
         saveUiState();
     }
 
@@ -244,6 +257,12 @@
         });
     }
 
+    if (openVsCodeSettingsBtn) {
+        openVsCodeSettingsBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'open-vscode-settings' });
+        });
+    }
+
     if (browseCompileCommands) {
         browseCompileCommands.addEventListener('click', () => {
             vscode.postMessage({ type: 'pick-compile-commands' });
@@ -254,111 +273,33 @@
     if (severityFilter) { severityFilter.addEventListener('change', renderFilteredFindings); }
     if (tabFindingsBtn) { tabFindingsBtn.addEventListener('click', () => switchResultTab('findings')); }
     if (tabStackBtn) { tabStackBtn.addEventListener('click', () => switchResultTab('stack')); }
-    if (stackSearch) { stackSearch.addEventListener('input', renderFilteredStackFunctions); }
-    if (stackGraphModeChains) {
-        stackGraphModeChains.addEventListener('click', () => {
-            stackGraphMode = 'chains';
-            stackGraphModeChains.classList.add('active');
-            stackGraphModeAll?.classList.remove('active');
-            if (currentStackReport) { renderCallGraph(currentStackReport); }
+    if (stackSearch) { stackSearch.addEventListener('input', renderStackView); }
+    if (stackViewTree) { stackViewTree.addEventListener('click', () => setStackView('tree')); }
+    if (stackViewRanking) { stackViewRanking.addEventListener('click', () => setStackView('ranking')); }
+    if (stackHotPath) { stackHotPath.addEventListener('click', showHotPath); }
+    if (stackExpandAll) {
+        stackExpandAll.addEventListener('click', () => {
+            if (!stackModel) { return; }
+            stackExpanded = stackTreeLib.allExpanded(stackModel);
+            stackTreeTouched = true;
+            renderStackView();
         });
     }
-    if (stackGraphModeAll) {
-        stackGraphModeAll.addEventListener('click', () => {
-            stackGraphMode = 'all';
-            stackGraphModeAll.classList.add('active');
-            stackGraphModeChains?.classList.remove('active');
-            if (currentStackReport) { renderCallGraph(currentStackReport); }
+    if (stackCollapseAll) {
+        stackCollapseAll.addEventListener('click', () => {
+            stackExpanded = new Set();
+            stackTreeTouched = true;
+            renderStackView();
         });
     }
-    if (stackZoomOut) { stackZoomOut.addEventListener('click', () => { setZoomAt(graphZoom - 0.15); }); }
-    if (stackZoomIn) { stackZoomIn.addEventListener('click', () => { setZoomAt(graphZoom + 0.15); }); }
-    if (stackZoomFit) { stackZoomFit.addEventListener('click', fitGraphToView); }
-    if (stackZoomLabel) {
-        stackZoomLabel.addEventListener('click', () => { setZoomAt(1.0); });
-        stackZoomLabel.addEventListener('dblclick', fitGraphToView);
+    if (stackTreeEl) {
+        stackTreeEl.addEventListener('click', onStackTreeClick);
+        stackTreeEl.addEventListener('dblclick', event => {
+            const row = event.target.closest('.stack-row');
+            if (row && row.dataset.id && !event.target.closest('.stack-row-twisty')) { openStackFunction(row.dataset.id); }
+        });
+        stackTreeEl.addEventListener('keydown', onStackTreeKeydown);
     }
-    const zoomBar = document.querySelector('.stack-graph-zoom');
-    if (zoomBar) {
-        zoomBar.addEventListener('wheel', event => {
-            event.preventDefault();
-            const step = event.deltaY < 0 ? 0.12 : -0.12;
-            setZoomAt(graphZoom + step);
-        }, { passive: false });
-    }
-    if (stackGraphContainer) {
-        // Trackpad pinch gesture (ctrlKey) and mouse wheel (Ctrl+wheel, Alt+wheel)
-        stackGraphContainer.addEventListener('wheel', event => {
-            if (event.ctrlKey || event.metaKey || event.altKey) {
-                event.preventDefault();
-                const factor = Math.exp(-event.deltaY * 0.006);
-                setZoomAt(graphZoom * factor, event.clientX, event.clientY);
-            }
-        }, { passive: false });
-
-        stackGraphContainer.addEventListener('pointerdown', event => {
-            if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('.stack-graph-node')) { return; }
-            graphPan = { x: event.clientX, y: event.clientY,
-                left: stackGraphContainer.scrollLeft, top: stackGraphContainer.scrollTop };
-            stackGraphContainer.setPointerCapture(event.pointerId);
-            stackGraphContainer.classList.add('is-panning');
-        });
-        stackGraphContainer.addEventListener('pointermove', event => {
-            if (!graphPan) { return; }
-            stackGraphContainer.scrollLeft = graphPan.left - (event.clientX - graphPan.x);
-            stackGraphContainer.scrollTop = graphPan.top - (event.clientY - graphPan.y);
-        });
-        const stopGraphPan = () => { graphPan = null; stackGraphContainer.classList.remove('is-panning'); };
-        stackGraphContainer.addEventListener('pointerup', stopGraphPan);
-        stackGraphContainer.addEventListener('pointercancel', stopGraphPan);
-    }
-
-    if (stackGraphResizer && stackGraphContainer) {
-        let startY = 0;
-        let startHeight = 0;
-
-        stackGraphResizer.addEventListener('pointerdown', event => {
-            if (event.button !== 0) { return; }
-            startY = event.clientY;
-            startHeight = stackGraphContainer.offsetHeight;
-            stackGraphResizer.setPointerCapture(event.pointerId);
-            stackGraphResizer.classList.add('is-resizing');
-            document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'ns-resize';
-        });
-
-        stackGraphResizer.addEventListener('pointermove', event => {
-            if (!stackGraphResizer.classList.contains('is-resizing')) { return; }
-            const deltaY = event.clientY - startY;
-            const maxH = Math.max(400, window.innerHeight * 0.85);
-            const newHeight = Math.max(160, Math.min(maxH, startHeight + deltaY));
-            stackGraphContainer.style.height = `${Math.round(newHeight)}px`;
-        });
-
-        const stopResize = () => {
-            if (stackGraphResizer.classList.contains('is-resizing')) {
-                stackGraphResizer.classList.remove('is-resizing');
-                document.body.style.userSelect = '';
-                document.body.style.cursor = '';
-            }
-        };
-
-        stackGraphResizer.addEventListener('pointerup', stopResize);
-        stackGraphResizer.addEventListener('pointercancel', stopResize);
-
-        stackGraphResizer.addEventListener('dblclick', () => {
-            const h = stackGraphContainer.offsetHeight;
-            if (h > 380) {
-                stackGraphContainer.style.height = '260px';
-            } else {
-                stackGraphContainer.style.height = '520px';
-            }
-        });
-    }
-
-    window.addEventListener('resize', () => {
-        applyGraphZoom();
-    });
 
     const smtEnabled = document.getElementById('smt-enabled');
     const smtControls = ['smt-backend', 'smt-secondary-backend', 'smt-mode', 'smt-timeout-ms', 'smt-rules']
@@ -368,7 +309,13 @@
     function updateSmtControls() {
         const enabled = Boolean(smtEnabled && smtEnabled.checked);
         smtControls.forEach(control => { control.disabled = !enabled; });
+        if (smtFields) { smtFields.classList.toggle('is-hidden', !enabled); }
+        if (smtSecondaryGroup && smtModeSelect) {
+            smtSecondaryGroup.classList.toggle('is-hidden', smtModeSelect.value === 'single');
+        }
     }
+
+    if (smtModeSelect) { smtModeSelect.addEventListener('change', updateSmtControls); }
 
     if (smtEnabled) {
         smtEnabled.addEventListener('change', updateSmtControls);
@@ -431,6 +378,7 @@
         setValue('smt-mode', saved.smtMode || 'single');
         setValue('smt-timeout-ms', saved.smtTimeoutMs || '');
         setValue('smt-rules', saved.smtRules || '');
+        setValue('compile-commands-path', saved.compileCommandsPath || '');
         setChecked('compdb-fast', saved.compdbFast === true);
         setChecked('include-compdb-deps', saved.includeCompdbDeps === true);
         setValue('compiler-extra-args', saved.compilerExtraArgs || '');
@@ -445,12 +393,142 @@
         updateAnalysisModeStyles();
         updateSmtControls();
         updateProfileDependentUi();
+        // setScanMode above saved the state before the values were restored.
+        saveUiState();
     }
 
     function saveUiState() {
         vscode.setState({
             uiState: readCtraceUiState(),
             scanWorkspace,
+            openSections: openSectionKeys(),
+        });
+        refreshSettingsIndicators();
+    }
+
+    // ── Settings: modified indicators, search, reset ───────────────────────────
+    function settingSections() {
+        return settingsView ? [...settingsView.querySelectorAll('.config-section')] : [];
+    }
+
+    function openSectionKeys() {
+        return settingsSearchRestore
+            ? [...settingsSearchRestore]
+            : settingSections().filter(section => section.open).map(section => section.dataset.section);
+    }
+
+    function isSettingModified(control) {
+        if (control.type === 'checkbox') { return control.checked !== control.defaultChecked; }
+        if (control.tagName === 'SELECT') {
+            const initial = [...control.options].find(option => option.defaultSelected) || control.options[0];
+            return control.value !== initial.value;
+        }
+        return control.value.trim() !== control.defaultValue;
+    }
+
+    function settingControls(root) {
+        return [...root.querySelectorAll('.setting input, .setting select')];
+    }
+
+    /** A modified setting only counts as active if it applies to this run. */
+    function isSettingActive(control) {
+        return isSettingModified(control) && !control.disabled && !control.closest('.is-hidden');
+    }
+
+    function refreshSettingsIndicators() {
+        if (!settingsView) { return; }
+        let total = 0;
+        settingSections().forEach(section => {
+            const active = settingControls(section).filter(isSettingActive);
+            total += active.length;
+            const count = section.querySelector('.config-count');
+            if (count) {
+                count.textContent = String(active.length);
+                count.hidden = active.length === 0;
+                count.title = `${active.length} changed setting${active.length > 1 ? 's' : ''}`;
+            }
+        });
+        settingControls(settingsView).forEach(control => {
+            control.closest('.setting').classList.toggle('is-modified', isSettingModified(control));
+        });
+        if (settingsBadge) {
+            settingsBadge.textContent = String(total);
+            settingsBadge.hidden = total === 0;
+        }
+        if (settingsBtn) {
+            settingsBtn.title = total > 0 ? `Open settings (${total} changed)` : 'Open settings';
+            settingsBtn.setAttribute('aria-label', settingsBtn.title);
+        }
+        if (resetSettingsBtn) {
+            resetSettingsBtn.disabled = !settingControls(settingsView).some(isSettingModified);
+        }
+    }
+
+    function applySettingsSearch() {
+        const query = settingsSearch ? settingsSearch.value.trim().toLowerCase() : '';
+        if (query && !settingsSearchRestore) {
+            settingsSearchRestore = new Set(settingSections().filter(section => section.open).map(section => section.dataset.section));
+        }
+        let anyVisible = false;
+        settingSections().forEach(section => {
+            const titleMatches = section.querySelector('.config-title').textContent.toLowerCase().includes(query);
+            const rows = [...section.querySelectorAll('.setting')];
+            const matching = rows.filter(row => !query || titleMatches || row.textContent.toLowerCase().includes(query));
+            rows.forEach(row => row.classList.toggle('search-miss', !matching.includes(row)));
+            // A match inside a switched-off group must lead to the switch.
+            if (matching.some(row => row.closest('.is-hidden'))) {
+                section.querySelector('[data-master]')?.classList.remove('search-miss');
+            }
+            const visible = rows.some(row => !row.classList.contains('search-miss') && !row.closest('.is-hidden'));
+            section.classList.toggle('search-miss', !visible);
+            anyVisible = anyVisible || (visible && section.style.display !== 'none');
+            if (query) { section.open = true; }
+        });
+        if (!query && settingsSearchRestore) {
+            const restore = settingsSearchRestore;
+            settingsSearchRestore = null;
+            settingSections().forEach(section => { section.open = restore.has(section.dataset.section); });
+        }
+        if (settingsNoMatch) { settingsNoMatch.hidden = !query || anyVisible; }
+    }
+
+    if (settingsSearch) { settingsSearch.addEventListener('input', applySettingsSearch); }
+    settingSections().forEach(section => {
+        section.addEventListener('toggle', () => { if (!settingsSearchRestore) { saveUiState(); } });
+    });
+    if (Array.isArray(persistedState.openSections)) {
+        settingSections().forEach(section => { section.open = persistedState.openSections.includes(section.dataset.section); });
+    }
+
+    let resetConfirmTimer = null;
+    function disarmReset() {
+        clearTimeout(resetConfirmTimer);
+        resetConfirmTimer = null;
+        if (resetSettingsLabel) { resetSettingsLabel.textContent = 'Reset to defaults'; }
+        resetSettingsBtn?.classList.remove('is-armed');
+    }
+
+    if (resetSettingsBtn) {
+        // Two clicks: a reset wipes values the user may have typed by hand.
+        resetSettingsBtn.addEventListener('click', () => {
+            if (!resetConfirmTimer) {
+                resetSettingsBtn.classList.add('is-armed');
+                if (resetSettingsLabel) { resetSettingsLabel.textContent = 'Click again to confirm'; }
+                resetConfirmTimer = setTimeout(disarmReset, 3000);
+                return;
+            }
+            disarmReset();
+            settingControls(settingsView).forEach(control => {
+                if (control.type === 'checkbox') {
+                    control.checked = control.defaultChecked;
+                } else if (control.tagName === 'SELECT') {
+                    control.selectedIndex = Math.max(0, [...control.options].findIndex(option => option.defaultSelected));
+                } else {
+                    control.value = control.defaultValue;
+                }
+            });
+            updateSmtControls();
+            saveUiState();
         });
     }
 
@@ -579,7 +657,7 @@
                 setRunning(true);
                 break;
             case 'analysis-result':
-                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt);
+                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt, msg.refresh === true);
                 break;
             case 'clear-results':
                 clearDisplayedResults();
@@ -607,14 +685,16 @@
                 break;
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
+                saveUiState();
                 break;
             case 'stack-data':
                 handleStackData(msg.data);
                 break;
             case 'focus-stack-tab':
                 switchResultTab('stack');
-                if (msg.functionName) {
-                    highlightStackFunction(msg.functionName);
+                if (msg.functionName && stackModel) {
+                    const id = stackTreeLib.resolveName(stackModel, msg.functionName);
+                    if (id) { revealStackFunction(id); }
                 }
                 break;
         }
@@ -687,17 +767,21 @@
         }
     }
 
-    function handleAnalysisResult(sarif, restored = false, savedAt) {
-        setRunning(false);
-        const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
-        setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
-        setProgress(100);
+    function handleAnalysisResult(sarif, restored = false, savedAt, refresh = false) {
+        // A refresh only re-applies the ignore list: keep the current status.
+        if (!refresh) {
+            setRunning(false);
+            const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
+            setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
+            setProgress(100);
+        }
 
         if (emptyState) { emptyState.style.display = 'none'; }
         if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
         if (vulnList) { vulnList.innerHTML = ''; }
 
         findings = [];
+        ignoredCount = 0;
         const seenFindings = new Set();
 
         if (sarif && sarif.runs) {
@@ -707,7 +791,11 @@
                     const key = `${res.ruleId || ''}|${loc?.artifactLocation?.uri || ''}|${loc?.region?.startLine ?? ''}|${res.message?.text || ''}`;
                     if (!seenFindings.has(key)) {
                         seenFindings.add(key);
-                        findings.push(res);
+                        if (res.properties && res.properties.ctraceIgnored === true) {
+                            ignoredCount++;
+                        } else {
+                            findings.push(res);
+                        }
                     }
                 });
             });
@@ -724,6 +812,7 @@
 
         if (count === 0 && vulnList) {
             vulnList.innerHTML = '<li class="info-item">No issues detected for the selected scope.</li>';
+            appendIgnoredNotice();
             if (typeof lucide !== 'undefined') { lucide.createIcons(); }
         }
 
@@ -734,15 +823,16 @@
 
     function clearDisplayedResults() {
         findings = [];
-        currentStackReport = null;
-        graphSelectedId = null;
+        stackModel = null;
+        stackExpanded = new Set();
+        stackTreeTouched = false;
+        stackSelectedKey = null;
         if (vulnList) { vulnList.replaceChildren(); }
-        if (stackFnList) { stackFnList.replaceChildren(); }
-        if (stackGraphContainer) {
-            stackGraphContainer.innerHTML = '<div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>';
+        if (stackTreeEl) {
+            stackTreeEl.innerHTML = '<div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>';
         }
-        if (stackGraphInspector) { stackGraphInspector.hidden = true; }
-        if (stackGraphCount) { stackGraphCount.textContent = '0 functions · 0 calls'; }
+        if (stackDetails) { stackDetails.hidden = true; }
+        if (stackTreeCount) { stackTreeCount.textContent = '0 functions'; }
         if (vulnCount) { vulnCount.textContent = '0'; vulnCount.classList.add('zero'); }
         if (tabVulnBadge) { tabVulnBadge.textContent = '0'; }
         if (tabStackBadge) { tabStackBadge.textContent = '0'; }
@@ -784,8 +874,8 @@
 
     function handleStackData(report) {
         if (!report) { return; }
-        currentStackReport = report;
-        graphSelectedId = null;
+        stackModel = stackTreeLib.createModel(report);
+        if (!stackTreeTouched) { stackExpanded = stackTreeLib.defaultExpanded(stackModel); }
 
         if (emptyState) { emptyState.style.display = 'none'; }
         if (resultsContainer) { resultsContainer.classList.remove('results-hidden'); }
@@ -809,417 +899,371 @@
             stackFunctionsVal.textContent = String(fnCount);
         }
 
-        renderCallGraph(report);
-        renderFilteredStackFunctions();
+        renderStackView();
     }
 
-    function renderCallGraph(report) {
-        if (!stackGraphContainer) { return; }
-        stackGraphContainer.replaceChildren();
-        const allNodes = report.callGraph?.nodes || [];
-        const allEdges = report.callGraph?.edges || [];
+    const TWISTY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-        const connectedIds = new Set();
-        allEdges.forEach(e => {
-            connectedIds.add(e.from);
-            connectedIds.add(e.to);
-        });
+    function setStackView(view) {
+        stackView = view;
+        stackViewTree?.classList.toggle('active', view === 'tree');
+        stackViewTree?.setAttribute('aria-pressed', String(view === 'tree'));
+        stackViewRanking?.classList.toggle('active', view === 'ranking');
+        stackViewRanking?.setAttribute('aria-pressed', String(view === 'ranking'));
+        if (stackTreeActions) { stackTreeActions.hidden = view !== 'tree'; }
+        stackSelectedKey = null;
+        renderStackView();
+    }
 
-        let nodes = allNodes;
-        if (stackGraphMode === 'chains' && allEdges.length > 0) {
-            const connected = allNodes.filter(n =>
-                connectedIds.has(n.id) || n.isRecursive || n.hasInfiniteSelfRecursion || n.exceedsLimit
-            );
-            if (connected.length > 0) {
-                nodes = connected;
-            }
+    function stackQuery() {
+        return stackSearch ? stackSearch.value.trim() : '';
+    }
+
+    function renderStackView() {
+        if (!stackTreeEl || !stackModel) { return; }
+        const query = stackQuery();
+        const hadFocus = stackTreeEl.contains(document.activeElement);
+        const result = stackView === 'tree'
+            ? stackTreeLib.flattenTree(stackModel, { expanded: stackExpanded, query })
+            : { rows: stackTreeLib.rankedRows(stackModel, query), truncated: false, matchCount: null };
+
+        if (stackTreeCount) {
+            const total = stackModel.nodes.size;
+            stackTreeCount.textContent = query
+                ? `${stackView === 'tree' ? result.matchCount : result.rows.length} of ${total} functions`
+                : `${total} function${total > 1 ? 's' : ''} · ${stackModel.callCount} call${stackModel.callCount > 1 ? 's' : ''}`;
         }
 
-        const nodeById = new Map(nodes.map(node => [node.id, node]));
-        const edges = allEdges.filter(edge =>
-            nodeById.has(edge.from) && nodeById.has(edge.to));
-
-        if (stackGraphCount) {
-            if (nodes.length < allNodes.length) {
-                stackGraphCount.textContent = `${nodes.length} in graph · ${edges.length} calls (${allNodes.length} total)`;
-            } else {
-                stackGraphCount.textContent = `${nodes.length} functions · ${edges.length} calls`;
-            }
-        }
-        if (!nodes.length) {
-            stackGraphContainer.innerHTML = '<div class="stack-empty-hint">No function data available.</div>';
-            if (stackGraphInspector) { stackGraphInspector.hidden = true; }
-            return;
-        }
-
-        const depth = new Map(nodes.map(node => [node.id, 0]));
-        const incoming = new Map(nodes.map(node => [node.id, 0]));
-        const outgoing = new Map(nodes.map(node => [node.id, []]));
-        edges.filter(edge => edge.from !== edge.to).forEach(edge => {
-            incoming.set(edge.to, incoming.get(edge.to) + 1);
-            outgoing.get(edge.from).push(edge.to);
-        });
-        const queue = nodes.filter(node => incoming.get(node.id) === 0)
-            .sort((a, b) => (a.name === 'main' ? -1 : b.name === 'main' ? 1 : a.name.localeCompare(b.name)))
-            .map(node => node.id);
-        const placed = new Set();
-        while (queue.length) {
-            const id = queue.shift();
-            if (placed.has(id)) { continue; }
-            placed.add(id);
-            outgoing.get(id).forEach(target => {
-                depth.set(target, Math.max(depth.get(target), Math.min(depth.get(id) + 1, 9)));
-                incoming.set(target, incoming.get(target) - 1);
-                if (incoming.get(target) === 0) { queue.push(target); }
-            });
-        }
-        edges.filter(edge => placed.has(edge.from) && !placed.has(edge.to)).forEach(edge => {
-            depth.set(edge.to, Math.min(depth.get(edge.from) + 1, 9));
-        });
-
-        const columns = new Map();
-        nodes.forEach(node => {
-            const level = depth.get(node.id);
-            if (!columns.has(level)) { columns.set(level, []); }
-            columns.get(level).push(node);
-        });
-        const levels = [...columns.keys()].sort((a, b) => a - b);
-        levels.forEach(level => columns.get(level).sort((a, b) => {
-            const parents = id => edges.filter(edge => edge.to === id).map(edge => edge.from);
-            const rank = id => {
-                const values = parents(id).map(parent => {
-                    const parentColumn = columns.get(depth.get(parent)) || [];
-                    return parentColumn.findIndex(node => node.id === parent);
-                }).filter(value => value >= 0);
-                return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 999;
-            };
-            return rank(a.id) - rank(b.id) || a.name.localeCompare(b.name);
-        }));
-
-        const nodeWidth = 188;
-        const nodeHeight = 78;
-        const colStep = 280;
-        const rowStep = 122;
-        const maxRows = Math.max(...[...columns.values()].map(column => column.length));
-        const width = 60 + (Math.max(...levels) * colStep) + nodeWidth + 40;
-        const height = Math.max(250, 75 + maxRows * rowStep);
-        const positions = new Map();
-        columns.forEach((column, level) => column.forEach((node, row) => {
-            positions.set(node.id, {
-                x: 36 + level * colStep,
-                y: 36 + (maxRows - column.length) * rowStep / 2 + row * rowStep
-            });
-        }));
-
-        const ns = 'http://www.w3.org/2000/svg';
-        const svg = document.createElementNS(ns, 'svg');
-        svg.classList.add('stack-graph');
-        svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-        svg.setAttribute('role', 'img');
-        svg.setAttribute('aria-label', `${nodes.length} functions connected by ${edges.length} calls`);
-        svg.dataset.baseWidth = String(width);
-        svg.dataset.baseHeight = String(height);
-        const make = (tag, attrs, parent) => {
-            const element = document.createElementNS(ns, tag);
-            Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
-            parent.appendChild(element);
-            return element;
-        };
-        const defs = make('defs', {}, svg);
-        const nodeGradient = make('linearGradient', { id: 'stack-node-gradient', x1: '0%', x2: '0%', y1: '0%', y2: '100%' }, defs);
-        make('stop', { offset: '0%', class: 'stack-node-top' }, nodeGradient);
-        make('stop', { offset: '100%', class: 'stack-node-bottom' }, nodeGradient);
-        const gradient = make('linearGradient', { id: 'stack-wire-gradient', x1: '0%', x2: '100%' }, defs);
-        make('stop', { offset: '0%', class: 'stack-wire-start' }, gradient);
-        make('stop', { offset: '100%', class: 'stack-wire-end' }, gradient);
-        const edgeLayer = make('g', { class: 'stack-graph-edges' }, svg);
-        edges.forEach(edge => {
-            const from = positions.get(edge.from);
-            const to = positions.get(edge.to);
-            const self = edge.from === edge.to;
-            const x1 = from.x + nodeWidth;
-            const y1 = from.y + nodeHeight / 2;
-            const x2 = to.x;
-            const y2 = to.y + nodeHeight / 2;
-            let d;
-            if (self) {
-                d = `M ${from.x + 118} ${from.y} C ${from.x + 118} ${from.y - 40}, ${from.x + 175} ${from.y - 40}, ${from.x + 175} ${from.y}`;
-            } else if (x2 > x1) {
-                const bend = Math.max(36, (x2 - x1) * 0.45);
-                d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
-            } else {
-                const rail = height - 26;
-                d = `M ${x1} ${y1} C ${x1 + 48} ${y1}, ${x1 + 48} ${rail}, ${x1} ${rail} L ${x2 - 35} ${rail} C ${x2 - 50} ${rail}, ${x2 - 50} ${y2}, ${x2} ${y2}`;
-            }
-            const wire = make('g', { class: 'stack-graph-wire' }, edgeLayer);
-            wire.dataset.from = edge.from;
-            wire.dataset.to = edge.to;
-            if (edge.isRecursiveCycle || self) { wire.classList.add('recursive'); }
-            make('path', { d, class: 'wire-glow' }, wire);
-            make('path', { d, class: 'wire-line' }, wire);
-            if (!self) { make('circle', { cx: x2, cy: y2, r: 3.4, class: 'wire-terminal' }, wire); }
-        });
-        const nodeLayer = make('g', { class: 'stack-graph-nodes' }, svg);
-        const maxStack = Math.max(1, ...nodes.map(node => node.maxStack || 0));
-        nodes.forEach(node => {
-            const pos = positions.get(node.id);
-            const group = make('g', {
-                class: 'stack-graph-node', transform: `translate(${pos.x} ${pos.y})`,
-                tabindex: 0, role: 'button',
-                'aria-label': `${node.name}, local ${formatBytes(node.localStack)}, peak ${formatBytes(node.maxStack)}`
-            }, nodeLayer);
-            group.dataset.id = node.id;
-            if (node.isRecursive || node.hasInfiniteSelfRecursion) { group.classList.add('recursive'); }
-            if (node.exceedsLimit) { group.classList.add('over-limit'); }
-            make('rect', { x: 0, y: 0, width: nodeWidth, height: nodeHeight, rx: 11, class: 'node-shell' }, group);
-            make('rect', { x: 0, y: 14, width: 3, height: 50, rx: 1.5, class: 'node-accent' }, group);
-            make('rect', { x: 12, y: 12, width: 26, height: 26, rx: 7, class: 'node-icon-box' }, group);
-            const icon = make('text', { x: 25, y: 30, class: 'node-icon', 'text-anchor': 'middle' }, group);
-            icon.textContent = 'ƒ';
-            const title = make('text', { x: 47, y: 29, class: 'node-title' }, group);
-            title.textContent = node.name.length > 20 ? `${node.name.slice(0, 18)}…` : node.name;
-            const tooltip = make('title', {}, group);
-            tooltip.textContent = node.name;
-            const localLabel = make('text', { x: 13, y: 55, class: 'node-meta-label' }, group);
-            localLabel.textContent = 'LOCAL';
-            const localValue = make('text', { x: 55, y: 55, class: 'node-meta-value' }, group);
-            localValue.textContent = formatBytes(node.localStack);
-            const peakLabel = make('text', { x: 112, y: 55, class: 'node-meta-label' }, group);
-            peakLabel.textContent = 'PEAK';
-            const peakValue = make('text', { x: 176, y: 55, class: 'node-meta-value', 'text-anchor': 'end' }, group);
-            peakValue.textContent = formatBytes(node.maxStack);
-            make('rect', { x: 12, y: 68, width: 164, height: 2, rx: 1, class: 'node-bar-track' }, group);
-            make('rect', { x: 12, y: 68, width: Math.max(3, Math.round(164 * (node.maxStack || 0) / maxStack)),
-                height: 2, rx: 1, class: 'node-bar-fill' }, group);
-            make('circle', { cx: 0, cy: nodeHeight / 2, r: 3.5, class: 'node-port' }, group);
-            make('circle', { cx: nodeWidth, cy: nodeHeight / 2, r: 3.5, class: 'node-port' }, group);
-            group.addEventListener('click', () => selectGraphNode(svg, node.id));
-            group.addEventListener('dblclick', () => openGraphFunction(node.name));
-            group.addEventListener('keydown', event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    selectGraphNode(svg, node.id);
-                }
-            });
-        });
-        stackGraphContainer.appendChild(svg);
-        applyGraphZoom();
-        if (!edges.length) {
+        stackTreeEl.replaceChildren();
+        if (result.rows.length === 0) {
             const hint = document.createElement('div');
-            hint.className = 'stack-graph-empty-links';
-            hint.textContent = 'Call links are not available for this report.';
-            stackGraphContainer.appendChild(hint);
+            hint.className = 'stack-empty-hint';
+            hint.textContent = query ? 'No functions match the filter.' : 'No function data available.';
+            stackTreeEl.appendChild(hint);
         }
-        if (graphSelectedId && nodeById.has(graphSelectedId)) {
-            selectGraphNode(svg, graphSelectedId, false);
-        } else if (stackGraphInspector) {
-            stackGraphInspector.hidden = true;
+        result.rows.forEach(row => stackTreeEl.appendChild(buildStackRow(row, query)));
+        if (result.truncated) {
+            const notice = document.createElement('div');
+            notice.className = 'stack-tree-notice';
+            notice.textContent = 'Too many rows to show them all. Filter or collapse to narrow the tree.';
+            stackTreeEl.appendChild(notice);
         }
+
+        const rows = [...stackTreeEl.querySelectorAll('.stack-row')];
+        let current = rows.find(row => row.dataset.key === stackSelectedKey);
+        if (!current) { stackSelectedKey = null; }
+        (current || rows[0])?.setAttribute('tabindex', '0');
+        current?.classList.add('is-selected');
+        current?.setAttribute('aria-selected', 'true');
+        if (hadFocus) { (current || rows[0])?.focus({ preventScroll: true }); }
+        renderStackDetails(current?.dataset.id);
     }
 
-    function openGraphFunction(name) {
-        const fn = currentStackReport?.functions?.find(item => item.name === name);
-        if (fn?.file) {
-            vscode.postMessage({ type: 'open-file', path: fn.file, line: fn.line ? fn.line - 1 : 0 });
+    function buildStackRow(row, query) {
+        const el = document.createElement('div');
+        el.className = 'stack-row';
+        el.setAttribute('role', 'treeitem');
+        el.setAttribute('tabindex', '-1');
+        el.setAttribute('aria-level', String(row.depth + 1));
+        el.setAttribute('aria-selected', 'false');
+        if (row.expandable) { el.setAttribute('aria-expanded', String(row.expanded)); }
+        el.dataset.key = row.key;
+        // Through the CSSOM: the webview CSP blocks inline style attributes.
+        el.style.setProperty('--depth', String(row.depth));
+
+        const guides = document.createElement('span');
+        guides.className = 'stack-row-guides';
+        const twisty = document.createElement('span');
+        twisty.className = `stack-row-twisty${row.expandable ? '' : ' is-leaf'}`;
+        if (row.expandable) { twisty.innerHTML = TWISTY_ICON; }
+        el.append(guides, twisty);
+
+        if (row.kind === 'group') {
+            el.classList.add('is-group');
+            const label = document.createElement('span');
+            label.className = 'stack-row-name';
+            label.textContent = 'No call links';
+            const count = document.createElement('span');
+            count.className = 'stack-row-value';
+            count.textContent = String(row.count);
+            el.append(label, count);
+            el.title = 'Functions that neither call nor are called by another analysed function';
+            return el;
         }
+
+        const node = stackModel.nodes.get(row.id);
+        el.dataset.id = row.id;
+        const pct = Math.min(100, Math.round(((node.maxStack || 0) / stackModel.peak) * 100));
+        el.style.setProperty('--pct', `${pct}%`);
+        if (row.hot) { el.classList.add('is-hot'); }
+        if (row.isCycleRef) { el.classList.add('is-cycle-ref'); }
+
+        const name = document.createElement('span');
+        name.className = 'stack-row-name';
+        appendHighlighted(name, node.name, query);
+
+        const badges = document.createElement('span');
+        badges.className = 'stack-row-badges';
+        const isRecursive = node.isRecursive || node.hasInfiniteSelfRecursion;
+        if (row.isCycleRef) {
+            badges.appendChild(stackBadge('↻', 'badge-danger', 'Recursive call: this function is already on the path above'));
+        } else if (isRecursive) {
+            badges.appendChild(stackBadge('↻', 'badge-danger', 'Part of a recursive cycle: its real stack use can be higher'));
+        }
+        if (node.exceedsLimit) { badges.appendChild(stackBadge('limit', 'badge-danger', 'Exceeds the stack limit')); }
+        if (node.hasDynamicAlloca) { badges.appendChild(stackBadge('alloca', 'badge-warning', 'Dynamic stack allocation')); }
+
+        const value = document.createElement('span');
+        value.className = 'stack-row-value';
+        value.textContent = row.isCycleRef ? '' : formatPeak(node);
+
+        el.append(name, badges, value);
+        el.title = [
+            node.name,
+            `Local ${formatBytes(node.localStack)} · Peak ${formatPeak(node)}`,
+            node.file ? `${node.file}${node.line ? `:${node.line}` : ''}` : '',
+        ].filter(Boolean).join('\n');
+        return el;
     }
 
-    function setZoomAt(newZoom, clientX, clientY) {
-        const clamped = Math.max(0.25, Math.min(3.0, newZoom));
-        if (Math.abs(clamped - graphZoom) < 0.001) { return; }
+    function stackBadge(text, className, title) {
+        const badge = document.createElement('span');
+        badge.className = `stack-badge ${className}`;
+        badge.textContent = text;
+        badge.title = title;
+        return badge;
+    }
 
-        const svg = stackGraphContainer?.querySelector('.stack-graph');
-        if (!svg || !stackGraphContainer) {
-            graphZoom = clamped;
-            applyGraphZoom();
+    function appendHighlighted(parent, text, query) {
+        const index = query ? text.toLowerCase().indexOf(query.toLowerCase()) : -1;
+        if (index < 0) {
+            parent.textContent = text;
             return;
         }
+        const mark = document.createElement('mark');
+        mark.textContent = text.slice(index, index + query.length);
+        parent.append(text.slice(0, index), mark, text.slice(index + query.length));
+    }
 
-        if (clientX !== undefined && clientY !== undefined) {
-            const rect = stackGraphContainer.getBoundingClientRect();
-            const cursorX = clientX - rect.left;
-            const cursorY = clientY - rect.top;
+    function formatPeak(node) {
+        if (node.maxStackUnknown) {
+            return node.maxStackLowerBound ? `≥ ${formatBytes(node.maxStackLowerBound)}` : '?';
+        }
+        return formatBytes(node.maxStack);
+    }
 
-            const contentX = (stackGraphContainer.scrollLeft + cursorX) / graphZoom;
-            const contentY = (stackGraphContainer.scrollTop + cursorY) / graphZoom;
+    function onStackTreeClick(event) {
+        const row = event.target.closest('.stack-row');
+        if (!row) { return; }
+        const key = row.dataset.key;
+        if (event.target.closest('.stack-row-twisty') || !row.dataset.id) {
+            if (row.hasAttribute('aria-expanded')) { toggleStackRow(key); }
+            return;
+        }
+        selectStackRow(row);
+        // A click opens but never closes: selecting a parent to read its
+        // details must not hide its callees.
+        if (row.getAttribute('aria-expanded') === 'false') { toggleStackRow(key); }
+    }
 
-            graphZoom = Math.round(clamped * 1000) / 1000;
-            applyGraphZoom();
-
-            stackGraphContainer.scrollLeft = contentX * graphZoom - cursorX;
-            stackGraphContainer.scrollTop = contentY * graphZoom - cursorY;
+    function toggleStackRow(key) {
+        if (stackExpanded.has(key)) {
+            stackExpanded.delete(key);
         } else {
-            graphZoom = Math.round(clamped * 1000) / 1000;
-            applyGraphZoom();
+            stackExpanded.add(key);
         }
+        stackTreeTouched = true;
+        renderStackView();
     }
 
-    function fitGraphToView() {
-        const svg = stackGraphContainer?.querySelector('.stack-graph');
-        if (!svg || !stackGraphContainer) { return; }
-        const baseWidth = Number(svg.dataset.baseWidth) || 500;
-        const availableWidth = stackGraphContainer.clientWidth - 28;
-        if (availableWidth > 60 && baseWidth > 0) {
-            const targetZoom = Math.max(0.25, Math.min(1.5, availableWidth / baseWidth));
-            setZoomAt(targetZoom);
-            stackGraphContainer.scrollLeft = 0;
-            stackGraphContainer.scrollTop = 0;
-        }
-    }
-
-    function applyGraphZoom() {
-        const svg = stackGraphContainer?.querySelector('.stack-graph');
-        if (svg) {
-            const baseW = Number(svg.dataset.baseWidth) || 500;
-            const baseH = Number(svg.dataset.baseHeight) || 300;
-            svg.setAttribute('width', Math.round(baseW * graphZoom));
-            svg.setAttribute('height', Math.round(baseH * graphZoom));
-        }
-        if (stackZoomLabel) { stackZoomLabel.textContent = `${Math.round(graphZoom * 100)}%`; }
-        if (stackZoomOut) { stackZoomOut.disabled = graphZoom <= 0.25; }
-        if (stackZoomIn) { stackZoomIn.disabled = graphZoom >= 3.0; }
-    }
-
-    function selectGraphNode(svg, nodeId, scroll = true) {
-        graphSelectedId = nodeId;
-        const related = new Set([nodeId]);
-        svg.querySelectorAll('.stack-graph-wire').forEach(wire => {
-            const active = wire.dataset.from === nodeId || wire.dataset.to === nodeId;
-            wire.classList.toggle('is-selected', active);
-            wire.classList.toggle('is-dimmed', !active);
-            if (active) { related.add(wire.dataset.from); related.add(wire.dataset.to); }
+    function selectStackRow(row, focus = true) {
+        if (!stackTreeEl) { return; }
+        stackTreeEl.querySelectorAll('.stack-row').forEach(other => {
+            const selected = other === row;
+            other.classList.toggle('is-selected', selected);
+            other.setAttribute('aria-selected', String(selected));
+            other.setAttribute('tabindex', selected ? '0' : '-1');
         });
-        svg.querySelectorAll('.stack-graph-node').forEach(group => {
-            group.classList.toggle('is-selected', group.dataset.id === nodeId);
-            group.classList.toggle('is-dimmed', !related.has(group.dataset.id));
-        });
-        const group = [...svg.querySelectorAll('.stack-graph-node')].find(el => el.dataset.id === nodeId);
-        if (scroll && group) { group.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' }); }
-        if (!stackGraphInspector || !currentStackReport) { return; }
-        const node = currentStackReport.callGraph?.nodes.find(item => item.id === nodeId);
-        if (!node) { return; }
-        const edges = currentStackReport.callGraph?.edges || [];
-        const callers = edges.filter(edge => edge.to === nodeId && edge.from !== nodeId).length;
-        const callees = edges.filter(edge => edge.from === nodeId && edge.to !== nodeId).length;
-        stackGraphInspector.replaceChildren();
-        const info = document.createElement('div');
-        info.className = 'stack-inspector-main';
+        stackSelectedKey = row.dataset.key;
+        if (focus) { row.focus({ preventScroll: true }); }
+        renderStackDetails(row.dataset.id);
+    }
+
+    function onStackTreeKeydown(event) {
+        const row = event.target.closest('.stack-row');
+        if (!row || !stackTreeEl) { return; }
+        const rows = [...stackTreeEl.querySelectorAll('.stack-row')];
+        const index = rows.indexOf(row);
+        const move = target => {
+            if (!target) { return; }
+            if (target.dataset.id) {
+                selectStackRow(target);
+            } else {
+                rows.forEach(other => other.setAttribute('tabindex', other === target ? '0' : '-1'));
+                target.focus({ preventScroll: true });
+            }
+            target.scrollIntoView({ block: 'nearest' });
+        };
+        const expanded = row.getAttribute('aria-expanded');
+        switch (event.key) {
+            case 'ArrowDown': move(rows[index + 1]); break;
+            case 'ArrowUp': move(rows[index - 1]); break;
+            case 'Home': move(rows[0]); break;
+            case 'End': move(rows[rows.length - 1]); break;
+            case 'ArrowRight':
+                if (expanded === 'false') { toggleStackRow(row.dataset.key); }
+                else if (expanded === 'true') { move(rows[index + 1]); }
+                break;
+            case 'ArrowLeft':
+                if (expanded === 'true') {
+                    toggleStackRow(row.dataset.key);
+                } else {
+                    const parent = stackTreeLib.parentKey(row.dataset.key);
+                    move(rows.find(other => other.dataset.key === parent));
+                }
+                break;
+            case 'Enter':
+                if (row.dataset.id) { openStackFunction(row.dataset.id); }
+                else { toggleStackRow(row.dataset.key); }
+                break;
+            case ' ':
+                if (row.dataset.id) { selectStackRow(row); }
+                else { toggleStackRow(row.dataset.key); }
+                break;
+            default:
+                return;
+        }
+        event.preventDefault();
+    }
+
+    function renderStackDetails(id) {
+        if (!stackDetails) { return; }
+        const node = id && stackModel ? stackModel.nodes.get(id) : null;
+        if (!node) {
+            stackDetails.hidden = true;
+            stackDetails.replaceChildren();
+            return;
+        }
+        const header = document.createElement('div');
+        header.className = 'stack-details-header';
         const name = document.createElement('strong');
         name.textContent = node.name;
-        const fileBasename = node.file ? node.file.split(/[\\/]/).pop() : '';
-        const meta = document.createElement('span');
-        meta.textContent = `${fileBasename ? `${fileBasename} · ` : ''}${callers} callers · ${callees} calls · ${formatBytes(node.maxStack)} peak`;
-        info.append(name, meta);
-        stackGraphInspector.appendChild(info);
-        if (currentStackReport.functions.some(fn => fn.name === nodeId && fn.file)) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.title = 'Open source';
-            button.setAttribute('aria-label', `Open ${node.name} in source`);
-            button.textContent = 'Open';
-            button.addEventListener('click', () => openGraphFunction(nodeId));
-            stackGraphInspector.appendChild(button);
-        }
-        stackGraphInspector.hidden = false;
-    }
-
-    function renderFilteredStackFunctions() {
-        if (!stackFnList || !currentStackReport) { return; }
-        stackFnList.innerHTML = '';
-
-        const query = stackSearch ? stackSearch.value.trim().toLowerCase() : '';
-        const list = (currentStackReport.functions || []).filter(fn => {
-            if (!query) { return true; }
-            if (fn.name.toLowerCase().includes(query)) { return true; }
-            if (fn.file && fn.file.toLowerCase().includes(query)) { return true; }
-            return false;
+        name.title = node.name;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'stack-details-close';
+        close.textContent = '×';
+        close.title = 'Close';
+        close.setAttribute('aria-label', 'Close details');
+        close.addEventListener('click', () => {
+            stackSelectedKey = null;
+            renderStackView();
         });
+        header.append(name, close);
 
-        if (list.length === 0) {
-            stackFnList.innerHTML = '<li class="stack-empty-hint">No functions match the search filter.</li>';
-            return;
+        const stats = document.createElement('div');
+        stats.className = 'stack-details-stats';
+        const stat = (label, value) => {
+            const cell = document.createElement('div');
+            const strong = document.createElement('strong');
+            strong.textContent = value;
+            const span = document.createElement('span');
+            span.textContent = label;
+            cell.append(strong, span);
+            return cell;
+        };
+        stats.append(
+            stat('Local', formatBytes(node.localStack)),
+            stat('Peak', formatPeak(node)),
+            stat('Of max', `${Math.min(100, Math.round(((node.maxStack || 0) / stackModel.peak) * 100))}%`)
+        );
+        stackDetails.replaceChildren(header, stats);
+
+        const callers = stackModel.parents.get(id).filter(other => other !== id);
+        const callees = stackModel.children.get(id).filter(other => other !== id);
+        if (callers.length > 0) { stackDetails.appendChild(stackLinkRow('Called by', callers)); }
+        if (callees.length > 0) { stackDetails.appendChild(stackLinkRow('Calls', callees)); }
+
+        if (node.file) {
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'stack-details-open';
+            const basename = String(node.file).split(/[\\/]/).pop();
+            open.textContent = `${basename}${node.line ? `:${node.line}` : ''}`;
+            open.title = `Open ${node.file}`;
+            open.addEventListener('click', () => openStackFunction(id));
+            stackDetails.appendChild(open);
         }
+        stackDetails.hidden = false;
+    }
 
-        const peak = currentStackReport.peakStack || 1;
-
-        // Sort by maxStack descending
-        list.sort((a, b) => b.maxStack - a.maxStack);
-
-        list.forEach(fn => {
-            const card = document.createElement('li');
-            const isRec = fn.isRecursive || fn.hasInfiniteSelfRecursion;
-            card.className = `stack-fn-card ${isRec ? 'is-recursive' : 'is-safe'}`;
-            card.id = `stack-fn-${escapeId(fn.name)}`;
-
-            const pct = Math.max(4, Math.min(100, Math.round((fn.maxStack / peak) * 100)));
-            const fileBasename = fn.file ? fn.file.split(/[\\/]/).pop() : '';
-            const fileTooltip = fn.file ? `${fn.file}${fn.line ? `:${fn.line}` : ''}` : '';
-            const filePill = fileBasename
-                ? `<span class="stack-pill pill-file" title="${escapeHtml(fileTooltip)}">${escapeHtml(fileBasename)}${fn.line ? `:${fn.line}` : ''}</span>`
-                : '';
-
-            card.innerHTML = `
-                <div class="stack-fn-header">
-                    <span class="stack-fn-name" title="${escapeHtml(fn.name)}">
-                        <i data-lucide="code-2"></i>
-                        <span class="stack-fn-title">${escapeHtml(fn.name)}()</span>
-                    </span>
-                    <div class="stack-fn-badges">
-                        ${filePill}
-                        ${isRec ? '<span class="stack-pill pill-danger">⚠️ Cycle</span>' : '<span class="stack-pill pill-safe">Safe</span>'}
-                        ${fn.hasDynamicAlloca ? '<span class="stack-pill pill-warning">alloca</span>' : ''}
-                    </div>
-                </div>
-                <div class="stack-bar-wrap">
-                    <div class="stack-bar-fill ${isRec ? 'fill-danger' : ''}" style="width: ${pct}%"></div>
-                </div>
-                <div class="stack-fn-meta">
-                    <span>Local: <strong>${formatBytes(fn.localStack)}</strong></span>
-                    <span>Peak: <strong>${formatBytes(fn.maxStack)}</strong> (${pct}%)</span>
-                </div>
-            `;
-
-            card.addEventListener('click', () => {
-                highlightStackFunction(fn.name);
-                if (fn.file) {
-                    vscode.postMessage({
-                        type: 'open-file',
-                        path: fn.file,
-                        line: fn.line ? fn.line - 1 : 0
-                    });
-                }
-            });
-
-            stackFnList.appendChild(card);
+    function stackLinkRow(label, ids) {
+        const MAX_LINKS = 4;
+        const row = document.createElement('div');
+        row.className = 'stack-details-links';
+        const title = document.createElement('span');
+        title.className = 'stack-details-label';
+        title.textContent = label;
+        row.appendChild(title);
+        ids.slice(0, MAX_LINKS).forEach(id => {
+            const link = document.createElement('button');
+            link.type = 'button';
+            link.className = 'stack-link';
+            link.textContent = id;
+            link.title = `Show ${id} in the tree`;
+            link.addEventListener('click', () => revealStackFunction(id));
+            row.appendChild(link);
         });
-
-        if (typeof lucide !== 'undefined') { lucide.createIcons(); }
+        if (ids.length > MAX_LINKS) {
+            const more = document.createElement('span');
+            more.className = 'stack-details-label';
+            more.textContent = `+${ids.length - MAX_LINKS}`;
+            more.title = ids.slice(MAX_LINKS).join('\n');
+            row.appendChild(more);
+        }
+        return row;
     }
 
-    function highlightStackFunction(funcName) {
-        if (!funcName) { return; }
-        if (currentStackReport && stackGraphMode === 'chains') {
-            const inChains = currentStackReport.callGraph?.edges?.some(e => e.from === funcName || e.to === funcName);
-            const fnObj = currentStackReport.functions?.find(f => f.name === funcName);
-            if (!inChains && !fnObj?.isRecursive && !fnObj?.exceedsLimit) {
-                stackGraphMode = 'all';
-                stackGraphModeAll?.classList.add('active');
-                stackGraphModeChains?.classList.remove('active');
-                renderCallGraph(currentStackReport);
-            }
-        }
-        const graph = stackGraphContainer?.querySelector('.stack-graph');
-        if (graph) { selectGraphNode(graph, funcName); }
-        const card = document.getElementById(`stack-fn-${escapeId(funcName)}`);
-        if (card) {
-            if (!graph) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-            card.classList.add('is-focused');
-            setTimeout(() => card.classList.remove('is-focused'), 2000);
+    function revealStackFunction(id) {
+        if (!stackModel) { return; }
+        const target = stackTreeLib.pathTo(stackModel, id);
+        if (!target) { return; }
+        if (stackSearch) { stackSearch.value = ''; }
+        if (stackView !== 'tree') { setStackView('tree'); }
+        target.open.forEach(key => stackExpanded.add(key));
+        stackTreeTouched = true;
+        stackSelectedKey = target.key;
+        renderStackView();
+        const row = [...stackTreeEl.querySelectorAll('.stack-row')].find(item => item.dataset.key === target.key);
+        if (row) {
+            selectStackRow(row);
+            row.scrollIntoView({ block: 'center' });
         }
     }
 
-    function escapeId(name) {
-        return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    function showHotPath() {
+        if (!stackModel || stackModel.hotPath.length === 0) { return; }
+        stackExpanded = new Set();
+        const hottest = stackModel.hotPath[stackModel.hotPath.length - 1];
+        // The hot path is not always the shortest route to its last function.
+        const keys = [...stackModel.hotKeys];
+        keys.slice(0, -1).forEach(key => stackExpanded.add(key));
+        if (stackSearch) { stackSearch.value = ''; }
+        stackTreeTouched = true;
+        stackSelectedKey = keys[keys.length - 1] ?? null;
+        renderStackView();
+        const row = [...stackTreeEl.querySelectorAll('.stack-row')].find(item => item.dataset.key === stackSelectedKey);
+        if (row && row.dataset.id === hottest) {
+            selectStackRow(row);
+            row.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function openStackFunction(id) {
+        const node = stackModel?.nodes.get(id);
+        if (node?.file) {
+            vscode.postMessage({ type: 'open-file', path: node.file, line: node.line ? node.line - 1 : 0 });
+        }
     }
 
     function renderFilteredFindings() {
@@ -1238,6 +1282,44 @@
         if (findings.length > 0 && filtered.length === 0 && vulnList) {
             vulnList.innerHTML = '<li class="info-item">No findings match the current filters.</li>';
         }
+        if (findings.length > 0) { appendIgnoredNotice(); }
+    }
+
+    function appendIgnoredNotice() {
+        if (!vulnList || ignoredCount === 0) { return; }
+        const li = document.createElement('li');
+        li.className = 'info-item ignored-notice';
+        const text = document.createElement('span');
+        text.textContent = `${ignoredCount} ignored finding${ignoredCount > 1 ? 's' : ''}`;
+        const manage = document.createElement('button');
+        manage.type = 'button';
+        manage.className = 'link-btn';
+        manage.textContent = 'Manage';
+        manage.addEventListener('click', () => {
+            vscode.postMessage({ type: 'execute-command', command: 'ctrace.manageIgnoredFindings' });
+        });
+        li.append(text, manage);
+        vulnList.appendChild(li);
+    }
+
+    /** Same normalisation as cweIds() in DiagnosticsManager.ts. */
+    function cweIds(properties) {
+        if (!properties) { return []; }
+        const raw = [].concat(properties.cwe === undefined ? [] : properties.cwe, Array.isArray(properties.tags) ? properties.tags : []);
+        const ids = [];
+        raw.forEach(value => {
+            let match = null;
+            if (typeof value === 'number') {
+                match = [String(value), String(value)];
+            } else if (typeof value === 'string') {
+                match = value.match(/^(?:external\/cwe\/)?cwe[-/]?0*(\d{1,5})$/i) || value.match(/^0*(\d{1,5})$/);
+            }
+            if (match) {
+                const id = `CWE-${Number(match[1])}`;
+                if (!ids.includes(id)) { ids.push(id); }
+            }
+        });
+        return ids;
     }
 
     function updateSummary(results) {
@@ -1313,6 +1395,46 @@
             ${locText ? `<div class="vuln-loc"><i data-lucide="map-pin"></i>${escapeHtml(locText)}</div>` : ''}
             <div class="vuln-msg">${escapeHtml(message)}</div>
         `;
+
+        const props = res.properties || {};
+        const cwes = cweIds(props);
+        const fingerprint = typeof props.ctraceFingerprint === 'string' ? props.ctraceFingerprint : '';
+        if (cwes.length > 0 || fingerprint || props.ctraceTool) {
+            const footer = document.createElement('div');
+            footer.className = 'vuln-footer';
+            cwes.forEach(cwe => {
+                const pill = document.createElement('button');
+                pill.type = 'button';
+                pill.className = 'vuln-cwe';
+                pill.textContent = cwe;
+                pill.title = `Open ${cwe} on cwe.mitre.org`;
+                pill.addEventListener('click', event => {
+                    event.stopPropagation();
+                    vscode.postMessage({ type: 'open-cwe', cwe });
+                });
+                footer.appendChild(pill);
+            });
+            if (typeof props.ctraceTool === 'string') {
+                const tool = document.createElement('span');
+                tool.className = 'vuln-tool';
+                tool.textContent = props.ctraceTool;
+                footer.appendChild(tool);
+            }
+            if (fingerprint) {
+                const ignore = document.createElement('button');
+                ignore.type = 'button';
+                ignore.className = 'vuln-ignore';
+                ignore.title = 'Ignore this finding (stored in .coretrace-ignore.json)';
+                ignore.setAttribute('aria-label', 'Ignore this finding');
+                ignore.innerHTML = '<i data-lucide="eye-off"></i><span>Ignore</span>';
+                ignore.addEventListener('click', event => {
+                    event.stopPropagation();
+                    vscode.postMessage({ type: 'ignore-finding', fingerprint, ruleId, path: filePath, line, message });
+                });
+                footer.appendChild(ignore);
+            }
+            li.appendChild(footer);
+        }
 
         li.addEventListener('click', () => {
             const safeLine = (typeof line === 'number' && isFinite(line)) ? Math.max(0, line - 1) : 0;

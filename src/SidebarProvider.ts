@@ -103,13 +103,37 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           break;
         }
         case "execute-command": {
-            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction'];
+            const allowedCommands = ['ctrace.runAnalysis', 'ctrace.runWorkspaceAnalysis', 'ctrace.clearAnalysisCache', 'ctrace.showHelp', 'ctrace.installDependencies', 'ctrace.focusStackFunction', 'ctrace.manageIgnoredFindings'];
             if (!allowedCommands.includes(data.command)) {
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
             }
             vscode.commands.executeCommand(data.command, data.params);
             break;
+        }
+        case "ignore-finding": {
+          const fingerprint = typeof data.fingerprint === "string" && /^[0-9a-f]{8,64}$/.test(data.fingerprint) ? data.fingerprint : undefined;
+          if (!fingerprint) { break; }
+          const fileUri = await resolveReportedFileUri(data.path);
+          vscode.commands.executeCommand("ctrace.ignoreFinding", {
+            fingerprint,
+            ruleId: typeof data.ruleId === "string" ? data.ruleId : undefined,
+            file: fileUri?.fsPath ?? (typeof data.path === "string" ? data.path : ""),
+            line: Number.isFinite(data.line) ? Math.max(1, Math.floor(data.line)) : 1,
+            message: typeof data.message === "string" ? data.message : undefined,
+          });
+          break;
+        }
+        case "open-cwe": {
+          const match = typeof data.cwe === "string" ? data.cwe.match(/^CWE-(\d{1,5})$/) : null;
+          if (match) {
+            vscode.env.openExternal(vscode.Uri.parse(`https://cwe.mitre.org/data/definitions/${match[1]}.html`));
+          }
+          break;
+        }
+        case "open-vscode-settings": {
+          vscode.commands.executeCommand("workbench.action.openSettings", "@ext:CoreTrace.coretrace");
+          break;
         }
         case "pick-compile-commands": {
           const selected = await vscode.window.showOpenDialog({
@@ -164,6 +188,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     const lucideUri = webview.asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, "media", "lucide.min.js")
     );
+    const stackTreeUri = webview.asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, "media", "stackTree.js")
+    );
     const logoUri = webview.asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, "media", "icon.png")
     );
@@ -192,6 +219,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
               <span class="header-title">CoreTrace</span>
               <button class="btn-settings" id="settings-btn" type="button" title="Open settings" aria-label="Open settings">
                 <i data-lucide="settings"></i>
+                <span class="settings-badge" id="settings-badge" hidden></span>
               </button>
             </div>
 					</div>
@@ -268,132 +296,217 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           </div>
 
           <div id="settings-view" class="view-panel settings-panel" aria-label="Ctrace settings" aria-hidden="true">
+            <div class="settings-top">
             <div class="settings-header">
-              <button class="btn-back" id="back-btn" type="button">
-                <i data-lucide="arrow-left"></i><span>Back to Dashboard</span>
+              <button class="btn-back" id="back-btn" type="button" title="Back to dashboard" aria-label="Back to dashboard">
+                <i data-lucide="arrow-left"></i>
               </button>
-              <div class="settings-header-actions">
-                <span class="settings-title">Settings</span>
-                <button class="btn-help" id="help-btn" type="button" title="Show ctrace command help" aria-label="Show ctrace command help">
-                  <i data-lucide="circle-help"></i>
-                </button>
-              </div>
+              <span class="settings-title">Settings</span>
             </div>
+            <label class="search-field" for="settings-search">
+              <i data-lucide="search"></i>
+              <input id="settings-search" type="search" placeholder="Search settings" autocomplete="off">
+            </label>
+          </div>
 
-          <!-- Filters & Scope -->
-          <details class="config-section">
-            <summary><i data-lucide="filter"></i><span>Filters &amp; Scope</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
+          <div class="settings-sections">
+          <details class="config-section" data-section="scope" open>
+            <summary><i data-lucide="filter"></i><span class="config-title">Scope</span><span class="config-count" hidden></span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
             <div class="config-content">
-              <label for="only-function">Function filter</label>
-              <input type="text" id="only-function" placeholder="e.g. isPositive">
-              <div class="scan-workspace-only" id="only-dir-group">
-                <label for="only-dir">Directory filter</label>
+              <div class="setting">
+                <label class="setting-label" for="only-function">Function filter</label>
+                <input type="text" id="only-function" placeholder="main,parse_config">
+                <small class="setting-hint">Only report functions with these names.</small>
+              </div>
+              <div class="setting" id="only-dir-group">
+                <label class="setting-label" for="only-dir">Only directories</label>
                 <input type="text" id="only-dir" placeholder="src,lib">
+                <small class="setting-hint">Only report functions under these directories.</small>
+                <small class="setting-scope">Scan Workspace only</small>
               </div>
-              <div class="scan-workspace-only" id="exclude-dir-group">
-                <label for="exclude-dir">Exclude directories</label>
-                <input type="text" id="exclude-dir" placeholder="build,.cache" />
+              <div class="setting" id="exclude-dir-group">
+                <label class="setting-label" for="exclude-dir">Exclude directories</label>
+                <input type="text" id="exclude-dir" placeholder="build,.cache">
+                <small class="setting-hint">Skip input files under these directories.</small>
+                <small class="setting-scope">Scan Workspace only</small>
               </div>
-              <label class="config-toggle">
-                <input type="checkbox" id="include-stl">
-                <span>Include STL / system libraries</span>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Include system libraries</span>
+                  <small class="setting-hint">Also analyse STL, system and third-party functions.</small>
+                </span>
+                <input type="checkbox" class="switch" id="include-stl">
               </label>
-              <label class="config-toggle" id="cross-tu-group">
-                <input type="checkbox" id="resource-cross-tu">
-                <span>Cross-TU resource analysis</span>
+              <label class="setting setting-toggle" id="cross-tu-group">
+                <span class="setting-text">
+                  <span class="setting-label">Cross-file resource analysis</span>
+                  <small class="setting-hint">Follow resource lifetimes across translation units.</small>
+                  <small class="setting-scope">Scan Workspace only</small>
+                </span>
+                <input type="checkbox" class="switch" id="resource-cross-tu">
               </label>
-              <label class="config-toggle" id="auto-entry-points-group">
-                <input type="checkbox" id="auto-entry-points">
-                <span>Auto-detect functions as entry-points</span>
-                <small class="settings-hint" id="auto-entry-points-hint">(Option available only in Scan File)</small>
+              <label class="setting setting-toggle" id="auto-entry-points-group">
+                <span class="setting-text">
+                  <span class="setting-label">All functions as entry points</span>
+                  <small class="setting-hint">Start from every function of the file instead of main.</small>
+                  <small class="setting-scope">Scan File only</small>
+                </span>
+                <input type="checkbox" class="switch" id="auto-entry-points">
               </label>
             </div>
           </details>
 
-          <!-- Advanced Engine -->
-          <details class="config-section" id="smt-section">
-            <summary><i data-lucide="cpu"></i><span>Advanced Engine (SMT)</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
+          <details class="config-section" data-section="build">
+            <summary><i data-lucide="hammer"></i><span class="config-title">Compilation</span><span class="config-count" hidden></span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
             <div class="config-content">
-              <label class="config-toggle">
-                <input type="checkbox" id="smt-enabled">
-                <span>Enable SMT Assistant</span>
-              </label>
-              <label for="smt-backend">SMT Backend</label>
-              <select id="smt-backend">
-                <option value="interval">interval</option>
-                <option value="z3">z3</option>
-                <option value="cvc5">cvc5</option>
-              </select>
-              <label for="smt-secondary-backend">SMT Secondary Backend</label>
-              <select id="smt-secondary-backend">
-                <option value="interval">interval</option>
-                <option value="z3">z3</option>
-                <option value="cvc5">cvc5</option>
-              </select>
-              <label for="smt-mode">SMT Mode</label>
-              <select id="smt-mode">
-                <option value="single">single</option>
-                <option value="portfolio">portfolio</option>
-                <option value="cross-check">cross-check</option>
-                <option value="dual-consensus">dual-consensus</option>
-              </select>
-              <label for="smt-timeout-ms">SMT Timeout (ms)</label>
-              <input type="number" id="smt-timeout-ms" min="1" step="1" placeholder="Optional">
-              <label for="smt-rules">SMT Rules</label>
-              <input type="text" id="smt-rules" placeholder="recursion,integer-overflow">
-            </div>
-          </details>
-
-          <!-- Compilation & Build -->
-          <details class="config-section">
-            <summary><i data-lucide="hammer"></i><span>Compilation &amp; Build</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
-            <div class="config-content">
-              <label for="compile-commands-path">compile_commands.json</label>
-              <div class="file-input-row">
-                <input type="text" id="compile-commands-path" placeholder="Path to compile_commands.json">
-                <button class="input-action-btn" id="browse-compile-commands" type="button" title="Choose compile_commands.json" aria-label="Choose compile_commands.json">
-                  <i data-lucide="folder-open"></i>
-                </button>
+              <div class="setting">
+                <label class="setting-label" for="compile-commands-path">compile_commands.json</label>
+                <div class="file-input-row">
+                  <input type="text" id="compile-commands-path" placeholder="Auto-detected when empty">
+                  <button class="input-action-btn" id="browse-compile-commands" type="button" title="Choose compile_commands.json" aria-label="Choose compile_commands.json">
+                    <i data-lucide="folder-open"></i>
+                  </button>
+                </div>
               </div>
-              <label class="config-toggle">
-                <input type="checkbox" id="compdb-fast">
-                <span>Fast Compdb</span>
+              <div class="setting">
+                <label class="setting-label" for="extra-includes">Include directories (-I)</label>
+                <input type="text" id="extra-includes" placeholder="include,third_party/include">
+                <small class="setting-hint">Comma-separated.</small>
+              </div>
+              <div class="setting">
+                <label class="setting-label" for="macros">Macros (-D)</label>
+                <input type="text" id="macros" placeholder="DEBUG,VERSION=2">
+                <small class="setting-hint">Comma-separated.</small>
+              </div>
+              <div class="setting">
+                <label class="setting-label" for="compiler-extra-args">Extra compiler arguments</label>
+                <input type="text" id="compiler-extra-args" placeholder="-include stdbool.h">
+              </div>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Fast compilation database</span>
+                  <small class="setting-hint">Faster, but drops heavy build flags such as optimizations.</small>
+                </span>
+                <input type="checkbox" class="switch" id="compdb-fast">
               </label>
-              <label class="config-toggle">
-                <input type="checkbox" id="include-compdb-deps">
-                <span>Include Compdb Deps</span>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Include dependencies</span>
+                  <small class="setting-hint">Also load dependency entries (e.g. _deps) from the database.</small>
+                </span>
+                <input type="checkbox" class="switch" id="include-compdb-deps">
               </label>
-              <label for="compiler-extra-args">Compiler Extra Args</label>
-              <input type="text" id="compiler-extra-args" placeholder="e.g. -include stdbool.h">
-              <label for="extra-includes">Extra Includes (-I)</label>
-              <input type="text" id="extra-includes" placeholder="include,third_party/include">
-              <label for="macros">Macros (-D)</label>
-              <input type="text" id="macros" placeholder="DEBUG,VERSION=2">
             </div>
           </details>
 
-          <!-- Output & Diagnostics -->
-          <details class="config-section">
-            <summary><i data-lucide="message-square-warning"></i><span>Output &amp; Diagnostics</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
+          <details class="config-section" data-section="output">
+            <summary><i data-lucide="message-square-warning"></i><span class="config-title">Output</span><span class="config-count" hidden></span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
             <div class="config-content">
-              <label class="config-toggle"><input type="checkbox" id="quiet"><span>Quiet Mode</span></label>
-              <label class="config-toggle"><input type="checkbox" id="warnings-only"><span>Warnings Only</span></label>
-              <label class="config-toggle"><input type="checkbox" id="timing"><span>Enable Timings</span></label>
-              <label class="config-toggle"><input type="checkbox" id="demangle"><span>Demangle C++ Names</span></label>
-              <label class="config-toggle"><input type="checkbox" id="dump-filter"><span>Dump Filter Decisions</span></label>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Warnings and errors only</span>
+                  <small class="setting-hint">Hide info-level diagnostics.</small>
+                </span>
+                <input type="checkbox" class="switch" id="warnings-only">
+              </label>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Quiet</span>
+                  <small class="setting-hint">Suppress per-function diagnostics.</small>
+                </span>
+                <input type="checkbox" class="switch" id="quiet">
+              </label>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Demangle C++ names</span>
+                  <small class="setting-hint">Show readable function names.</small>
+                </span>
+                <input type="checkbox" class="switch" id="demangle">
+              </label>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Timings</span>
+                  <small class="setting-hint">Print stack analyzer timings in the Ctrace output.</small>
+                </span>
+                <input type="checkbox" class="switch" id="timing">
+              </label>
+              <label class="setting setting-toggle">
+                <span class="setting-text">
+                  <span class="setting-label">Filter decisions</span>
+                  <small class="setting-hint">Print which functions the filters keep, for debugging them.</small>
+                </span>
+                <input type="checkbox" class="switch" id="dump-filter">
+              </label>
             </div>
           </details>
 
-          <!-- External Analyzers & Tools -->
-          <details class="config-section">
-            <summary><i data-lucide="wrench"></i><span>Analyzers &amp; Dependencies</span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
+          <details class="config-section" data-section="smt" id="smt-section">
+            <summary><i data-lucide="cpu"></i><span class="config-title">SMT solver</span><span class="config-count" hidden></span><i data-lucide="chevron-down" class="section-chevron"></i></summary>
             <div class="config-content">
-              <small class="settings-hint" style="display: block; margin-bottom: 8px;">Install or configure external tools: cppcheck, flawfinder, ikos, tscancode.</small>
-              <button class="btn-settings-action" id="install-deps-btn" type="button" style="width: 100%; padding: 6px 12px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ffffff); border: 1px solid var(--vscode-button-border, transparent); border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                <i data-lucide="download"></i><span>Install / Repair Analyzers</span>
-              </button>
+              <label class="setting setting-toggle" data-master>
+                <span class="setting-text">
+                  <span class="setting-label">Use an SMT solver</span>
+                  <small class="setting-hint">Refine stack analyzer results. Slower, available in the Full profile.</small>
+                </span>
+                <input type="checkbox" class="switch" id="smt-enabled">
+              </label>
+              <div class="setting-group is-hidden" id="smt-fields">
+              <div class="setting">
+                <label class="setting-label" for="smt-backend">Backend</label>
+                <select id="smt-backend">
+                  <option value="interval">interval</option>
+                  <option value="z3">z3</option>
+                  <option value="cvc5">cvc5</option>
+                </select>
+              </div>
+              <div class="setting">
+                <label class="setting-label" for="smt-mode">Mode</label>
+                <select id="smt-mode">
+                  <option value="single">single</option>
+                  <option value="portfolio">portfolio</option>
+                  <option value="cross-check">cross-check</option>
+                  <option value="dual-consensus">dual-consensus</option>
+                </select>
+              </div>
+              <div class="setting" id="smt-secondary-group">
+                <label class="setting-label" for="smt-secondary-backend">Secondary backend</label>
+                <select id="smt-secondary-backend">
+                  <option value="interval">interval</option>
+                  <option value="z3">z3</option>
+                  <option value="cvc5">cvc5</option>
+                </select>
+                <small class="setting-hint">Used by the multi-solver modes.</small>
+              </div>
+              <div class="setting">
+                <label class="setting-label" for="smt-timeout-ms">Timeout (ms)</label>
+                <input type="number" id="smt-timeout-ms" placeholder="Default" min="1" step="1">
+              </div>
+              <div class="setting">
+                <label class="setting-label" for="smt-rules">Rules</label>
+                <input type="text" id="smt-rules" placeholder="recursion,integer-overflow">
+                <small class="setting-hint">Restrict SMT to these rules.</small>
+              </div>
+              </div>
             </div>
           </details>
+
+          </div>
+          <div class="settings-no-match" id="settings-no-match" hidden>No settings match your search.</div>
+
+          <div class="settings-actions">
+            <button class="settings-action" id="install-deps-btn" type="button">
+              <i data-lucide="download"></i><span>Install or repair analyzers</span>
+            </button>
+            <button class="settings-action" id="open-vscode-settings" type="button" title="Timeout, incremental scans, analysis models…">
+              <i data-lucide="sliders-horizontal"></i><span>More in VS Code settings</span>
+            </button>
+            <button class="settings-action" id="help-btn" type="button">
+              <i data-lucide="circle-help"></i><span>ctrace command help</span>
+            </button>
+            <button class="settings-action settings-reset" id="reset-settings" type="button" disabled>
+              <i data-lucide="rotate-ccw"></i><span id="reset-settings-label">Reset to defaults</span>
+            </button>
+          </div>
 
           </div>
 
@@ -460,43 +573,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 </div>
               </div>
 
-              <!-- Connected call graph -->
-              <div class="stack-graph-heading">
-                <div class="stack-section-title"><i data-lucide="workflow"></i><span>Call graph</span></div>
-                <span id="stack-graph-count" class="stack-graph-count">0 links</span>
-              </div>
-              <div class="stack-graph-toolbar" aria-label="Call graph controls">
-                <div class="stack-graph-modes" id="stack-graph-modes">
-                  <button id="stack-graph-mode-chains" class="stack-mode-btn active" type="button" title="Show connected call chains">Chains</button>
-                  <button id="stack-graph-mode-all" class="stack-mode-btn" type="button" title="Show all workspace functions">All</button>
+              <!-- Call tree -->
+              <label class="search-field" for="stack-search">
+                <i data-lucide="search"></i>
+                <input id="stack-search" type="search" placeholder="Filter by function or file…" autocomplete="off">
+              </label>
+              <div class="stack-tree-toolbar">
+                <div class="stack-view-modes" role="group" aria-label="Stack view">
+                  <button id="stack-view-tree" class="stack-mode-btn active" type="button" aria-pressed="true" title="Who calls what">Call tree</button>
+                  <button id="stack-view-ranking" class="stack-mode-btn" type="button" aria-pressed="false" title="All functions, heaviest first">Ranking</button>
                 </div>
-                <div class="stack-graph-zoom">
-                  <button id="stack-zoom-out" type="button" aria-label="Zoom out" title="Zoom out"><i data-lucide="minus"></i></button>
-                  <button id="stack-zoom-fit" type="button" aria-label="Fit to view" title="Adapter à la vue"><i data-lucide="scan"></i></button>
-                  <span id="stack-zoom-label" title="Cliquer pour réinitialiser (100%), double-clic pour adapter">100%</span>
-                  <button id="stack-zoom-in" type="button" aria-label="Zoom in" title="Zoom in"><i data-lucide="plus"></i></button>
+                <div class="stack-tree-actions" id="stack-tree-actions">
+                  <button id="stack-hot-path" type="button" aria-label="Show the heaviest call path" title="Show the heaviest call path"><i data-lucide="flame"></i></button>
+                  <button id="stack-expand-all" type="button" aria-label="Expand all" title="Expand all"><i data-lucide="chevrons-up-down"></i></button>
+                  <button id="stack-collapse-all" type="button" aria-label="Collapse all" title="Collapse all"><i data-lucide="chevrons-down-up"></i></button>
                 </div>
               </div>
-              <div id="stack-graph-container" class="stack-graph-container" aria-label="Function call graph">
+              <div class="stack-tree-header">
+                <span id="stack-tree-count">0 functions</span>
+                <span>Peak stack</span>
+              </div>
+              <div id="stack-tree" class="stack-tree" role="tree" aria-label="Function call tree">
                 <div class="stack-empty-hint">Run the stack analyzer to view functions and calls.</div>
               </div>
-              <div class="stack-graph-resizer" id="stack-graph-resizer" title="Glisser pour agrandir la hauteur (Double-clic pour basculer)">
-                <div class="resizer-handle"></div>
-              </div>
-              <div id="stack-graph-inspector" class="stack-graph-inspector" hidden></div>
-              <div class="stack-graph-legend"><span><i class="legend-link"></i>Call</span><span><i class="legend-cycle"></i>Recursion</span><span>Click a node to inspect</span></div>
-
-              <!-- Functions Hierarchy Section -->
-              <div class="stack-section-title" style="margin-top: 14px;">
-                <i data-lucide="list-tree"></i><span>Function Stack Footprints</span>
-              </div>
-              <div class="findings-toolbar" style="margin-bottom: 8px;">
-                <label class="search-field" for="stack-search" style="width: 100%;">
-                  <i data-lucide="search"></i>
-                  <input id="stack-search" type="search" placeholder="Filter functions by name or file..." autocomplete="off">
-                </label>
-              </div>
-              <ul id="stack-fn-list" class="stack-fn-list"></ul>
+              <div id="stack-details" class="stack-details" hidden></div>
             </div>
 
 					</div>
@@ -516,6 +616,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 				</div>
 
 				<script nonce="${nonce}" src="${lucideUri}"></script>
+				<script nonce="${nonce}" src="${stackTreeUri}"></script>
 				<script nonce="${nonce}" src="${scriptUri}"></script>
 			</body>
 			</html>`;

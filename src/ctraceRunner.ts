@@ -96,6 +96,7 @@ export function buildCtraceArgs(
 
     args.push('--sarif-format');
     args.push(`--report-file=${requiredReportFile(uiState.reportFile)}`);
+    args.push(...profileArgs(uiState));
 
     const compileCommandsPath = cleanValue(uiState.compileCommandsPath)
         ?? configString(vscodeConfig, 'compileCommandsPath');
@@ -172,6 +173,15 @@ function configString(config: vscode.WorkspaceConfiguration | undefined, key: st
     return cleanValue(config?.get<string>(key));
 }
 
+/** Reads a boolean setting that may also be "on"/"off"/"default"; "default" means unset. */
+function configTriState(config: vscode.WorkspaceConfiguration | undefined, key: string): boolean | undefined {
+    const value = config?.get<unknown>(key);
+    if (typeof value === 'boolean') { return value; }
+    if (value === 'on') { return true; }
+    if (value === 'off') { return false; }
+    return undefined;
+}
+
 function configValue(config: vscode.WorkspaceConfiguration, key: string): string | number | undefined {
     const value = config.get<string | number>(key);
     if (typeof value === 'number') { return Number.isFinite(value) ? value : undefined; }
@@ -194,6 +204,12 @@ function compileArgs(value: unknown, prefix?: '-I' | '-D'): string[] {
         .map(item => item.trim())
         .filter(Boolean)
         .map(item => `--compile-arg=${prefix ?? ''}${item}`);
+}
+
+function profileArgs(uiState: CtraceUIState): string[] {
+    return uiState.analysisProfile === undefined
+        ? []
+        : [`--analysis-profile=${validProfile(uiState.analysisProfile)}`];
 }
 
 function validProfile(value: unknown): AnalysisProfile {
@@ -235,7 +251,8 @@ function toInternalPath(p: string): string {
     if (distroMatch) {
         return '/' + distroMatch[2] + '/' + distroMatch[3];
     }
-    return normalized;
+    // ctrace reads the config file inside WSL, where C:\x is /mnt/c/x.
+    return normalized.replace(/^([a-zA-Z]):(?=\/|$)/, (_match, drive: string) => `/mnt/${drive.toLowerCase()}`);
 }
 
 export function generateConfigFileIfNeeded(
@@ -278,8 +295,15 @@ export function generateConfigFileIfNeeded(
         .map(s => s.replace(/^--only-functions?=/, '').replace(/^--only-func=/, '').trim())
         .filter(Boolean);
 
-    const onlyDirs = parseList(uiState.onlyDir);
-    const excludeDirs = parseList(uiState.excludeDir);
+    // ctrace does not run from the workspace, so a relative directory would
+    // match nothing: only_dirs would hide every function and exclude_dirs no file.
+    const resolveDir = (dir: string): string => {
+        const isAbsolute = path.isAbsolute(dir) || dir.startsWith('/') || /^[a-zA-Z]:/.test(dir);
+        const resolved = internalRoot && !isAbsolute ? path.posix.join(internalRoot, dir.replace(/\\/g, '/')) : dir;
+        return toInternalPath(resolved).replace(/(?<=.)\/+$/, '');
+    };
+    const onlyDirs = parseList(uiState.onlyDir).map(resolveDir);
+    const excludeDirs = parseList(uiState.excludeDir).map(resolveDir);
     const includeStl = uiState.includeStl === true;
     const compdbFast = uiState.compdbFast === true || (vscodeConfig?.get<boolean>('performance.compdbFast', false) ?? false);
     const dumpFilter = uiState.dumpFilter === true;
@@ -287,7 +311,7 @@ export function generateConfigFileIfNeeded(
     const compileIrCacheDir = configString(vscodeConfig, 'performance.compileIrCacheDir');
     const resourceCrossTu = uiState.resourceCrossTu !== undefined
         ? uiState.resourceCrossTu
-        : vscodeConfig?.get<boolean | undefined>('analysis.resourceCrossTu');
+        : configTriState(vscodeConfig, 'analysis.resourceCrossTu');
     const resourceSummaryDir = configString(vscodeConfig, 'cache.resourceSummaryDir');
     const resourceSummaryMemoryOnly = vscodeConfig?.get<boolean>('cache.memoryOnly', false);
 
@@ -385,7 +409,7 @@ export function buildStackAnalyzerArgs(
     uiState: CtraceUIState,
     vscodeConfig?: vscode.WorkspaceConfiguration
 ): string[] {
-    const args: string[] = ['--invoke=ctrace_stack_analyzer'];
+    const args: string[] = ['--invoke=ctrace_stack_analyzer', ...profileArgs(uiState)];
 
     const rawEntryPoints = (uiState.entryPoints ?? [])
         .flatMap(name => typeof name === 'string' ? name.split(',') : []);
@@ -419,6 +443,12 @@ export function buildStackAnalyzerArgs(
         if (timeout !== undefined) { args.push(`--smt-timeout-ms=${timeout}`); }
         const rules = cleanValue(uiState.smtRules);
         if (rules) { args.push(`--smt-rules=${rules}`); }
+    }
+
+    // The Stack Tree flags the functions over this limit.
+    if (vscodeConfig) {
+        const stackLimit = configValue(vscodeConfig, 'analysis.stackLimit');
+        if (stackLimit !== undefined) { args.push(`--stack-limit=${stackLimit}`); }
     }
 
     return args;
