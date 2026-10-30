@@ -72,6 +72,13 @@ The **Stack Tree** tab shows how much stack your functions use, in a layout made
 - **Keyboard**: arrow keys navigate and open rows, `Enter` opens the source (double-click works too).
 - Recursive calls end on a row marked `↻` instead of expanding forever.
 
+### 10. Settings Panel
+The gear icon opens the analysis settings, grouped by purpose:
+- **Search** across every setting; matches inside a switched-off group lead you to its switch.
+- A **counter** on the gear and on each section shows how many settings are changed, and a bar marks each changed row, so a forgotten filter cannot silently narrow your results.
+- Options that do not apply to the current scan mode say so on a single line.
+- **Reset to defaults** restores everything in two clicks. Settings stored in `settings.json` (timeout, incremental scans, analysis models…) are one click away.
+
 ---
 
 ## ⚙️ Requirements & Prerequisites

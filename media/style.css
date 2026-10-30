@@ -137,26 +137,28 @@ body {
     transform: translateY(-50%) rotate(25deg);
 }
 
+/* Stays reachable while scrolling a long list of settings. */
+.settings-top {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    padding-bottom: 8px;
+    background: var(--vscode-sideBar-background, var(--coretrace-surface));
+}
+
+.settings-top .search-field { width: 100%; }
+
 .settings-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-height: 34px;
-    margin-bottom: 10px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--coretrace-border);
-}
-
-.settings-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    gap: 4px;
+    min-height: 28px;
+    margin-bottom: 6px;
 }
 
 .settings-title {
     color: var(--coretrace-text);
-    font-size: 0.84em;
+    font-size: 0.9em;
     font-weight: 600;
 }
 
@@ -685,7 +687,13 @@ body {
 .tool-dropdown label:hover { background: var(--vscode-list-hoverBackground, var(--coretrace-red-soft)); }
 .tool-dropdown input { accent-color: var(--coretrace-red); }
 
-/* ── Compact configuration sections ───────────────────────────────────────── */
+/* ── Settings sections ─────────────────────────────────────────────────────── */
+.settings-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
 .config-section {
     border: 1px solid var(--coretrace-border);
     border-radius: 7px;
@@ -698,71 +706,220 @@ body {
     align-items: center;
     gap: 7px;
     padding: 8px 10px;
-    color: var(--coretrace-muted);
-    font-size: 0.78em;
+    color: var(--coretrace-text);
+    font-size: 0.8em;
+    font-weight: 600;
     cursor: pointer;
     list-style: none;
     user-select: none;
 }
 
 .config-section summary::-webkit-details-marker { display: none; }
-.config-section summary svg { width: 14px; height: 14px; flex-shrink: 0; }
-.config-section summary span { flex: 1; }
-.config-section summary:hover { color: var(--coretrace-text); background: var(--coretrace-surface-raised); }
+.config-section summary svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--coretrace-muted); }
+.config-section summary:hover { background: var(--coretrace-surface-raised); }
+.config-section summary:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--coretrace-red-bright)); outline-offset: -1px; }
+.config-title { flex: 1; min-width: 0; }
+
+.config-count {
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--coretrace-red);
+    color: #fff;
+    font-size: 0.82em;
+    line-height: 16px;
+    text-align: center;
+}
+
+.config-count[hidden] { display: none; }
 .section-chevron { transition: transform 0.2s ease; }
-.config-section[open] .section-chevron { transform: rotate(180deg); color: var(--coretrace-red-bright); }
+.config-section[open] .section-chevron { transform: rotate(180deg); }
 
-.config-content {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 5px;
-    padding: 0 10px 10px;
+.config-content,
+.setting-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
 
-.scan-workspace-only.is-hidden {
+.config-content { padding: 4px 10px 12px; }
+
+.config-section.is-disabled { opacity: 0.48; }
+.config-section.is-disabled summary { cursor: not-allowed; }
+
+.is-hidden,
+.search-miss { display: none !important; }
+
+.setting {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+/* Same cue as the VS Code settings editor: a bar beside what was changed. */
+.setting.is-modified::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 -10px;
+    width: 2px;
+    background: var(--coretrace-red-bright);
+}
+
+.setting-toggle {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+}
+
+.setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.setting-label {
+    color: var(--coretrace-text);
+    font-size: 0.76em;
+}
+
+.setting-hint {
+    color: var(--coretrace-muted);
+    font-size: 0.68em;
+    line-height: 1.35;
+}
+
+.setting-scope {
     display: none;
+    color: var(--coretrace-muted);
+    font-size: 0.68em;
+    font-weight: 600;
 }
 
-.config-section.is-disabled {
-    opacity: 0.48;
-}
-
-.config-section.is-disabled summary {
+/* An option this scan mode cannot use shrinks to one line saying why. */
+.setting.is-disabled,
+.setting.is-disabled .setting-text {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px 8px;
     cursor: not-allowed;
 }
 
-.config-toggle.is-disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+.setting.is-disabled .setting-text { flex: 1; }
+.setting.is-disabled .setting-label { color: var(--coretrace-muted); }
+.setting.is-disabled .setting-hint,
+.setting.is-disabled input { display: none; }
+.setting.is-disabled .setting-scope { display: block; }
+
+.switch {
+    appearance: none;
+    position: relative;
+    flex: 0 0 28px;
+    width: 28px;
+    height: 16px;
+    margin: 1px 0 0;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.42);
+    cursor: inherit;
+    transition: background 0.15s ease;
 }
 
-.settings-hint {
-    flex-basis: 100%;
-    margin-left: 21px;
-    color: var(--coretrace-muted);
-    font-size: 0.9em;
+.switch::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s ease;
 }
 
-.config-content label:not(.config-toggle),
-.profile-select > span {
-    margin-top: 3px;
-    color: var(--coretrace-muted);
-    font-size: 0.72em;
-}
+.switch:checked { background: var(--coretrace-red); }
+.switch:checked::before { transform: translateX(12px); }
+.switch:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--coretrace-red-bright)); outline-offset: 2px; }
 
 .config-content input[type='text'],
 .config-content input[type='number'],
 .config-content select {
     width: 100%;
     min-width: 0;
-    padding: 6px 8px;
+    padding: 5px 8px;
     background: var(--coretrace-input);
     color: var(--coretrace-input-text);
     border: 1px solid var(--vscode-input-border, var(--coretrace-border));
     border-radius: 4px;
-    font-size: 0.78em;
+    font-size: 0.76em;
     font-family: var(--vscode-editor-font-family);
 }
+
+.config-content input[type='text']:focus,
+.config-content input[type='number']:focus,
+.config-content select:focus {
+    outline: 1px solid var(--vscode-focusBorder, var(--coretrace-red-bright));
+    outline-offset: -1px;
+}
+
+.settings-no-match {
+    padding: 14px 8px;
+    color: var(--coretrace-muted);
+    font-size: 0.76em;
+    text-align: center;
+}
+
+.settings-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--coretrace-border);
+}
+
+.settings-action {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 5px 6px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--coretrace-text);
+    font: inherit;
+    font-size: 0.76em;
+    text-align: left;
+    cursor: pointer;
+}
+
+.settings-action svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--coretrace-muted); }
+.settings-action:hover:not(:disabled) { background: var(--coretrace-surface-raised); }
+.settings-action:disabled { color: var(--coretrace-muted); opacity: 0.55; cursor: default; }
+.settings-reset.is-armed,
+.settings-reset.is-armed svg { color: var(--coretrace-red-bright); }
+
+.settings-badge {
+    position: absolute;
+    top: -3px;
+    right: -4px;
+    min-width: 13px;
+    padding: 0 3px;
+    border-radius: 7px;
+    background: var(--coretrace-red);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    text-align: center;
+}
+
+.settings-badge[hidden] { display: none; }
 
 .file-input-row {
     display: flex;
@@ -795,21 +952,13 @@ body {
 
 .config-content input:disabled,
 .config-content select:disabled {
-    opacity: 0.45;
     cursor: not-allowed;
 }
 
-.config-toggle {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding-top: 3px;
+.profile-select > span {
     color: var(--coretrace-muted);
-    font-size: 0.75em;
-    cursor: pointer;
+    font-size: 0.72em;
 }
-
-.config-toggle input { accent-color: var(--coretrace-red); }
 
 .profile-select {
     display: flex;
@@ -841,26 +990,6 @@ body {
     color: var(--coretrace-red-bright);
     border-color: rgba(227, 38, 54, 0.55);
     background: var(--coretrace-red-soft);
-}
-
-.btn-help svg {
-    width: 14px;
-    height: 14px;
-}
-
-.btn-help {
-    display: grid;
-    place-items: center;
-    padding: 3px;
-    background: transparent;
-    color: var(--coretrace-muted);
-    border: 0;
-    cursor: pointer;
-}
-
-.btn-help:hover {
-    color: var(--coretrace-red-bright);
-    filter: drop-shadow(0 0 6px var(--coretrace-red-glow));
 }
 
 /* ── Divider ───────────────────────────────────────────────────────────────── */

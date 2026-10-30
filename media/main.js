@@ -69,12 +69,22 @@
     const crossTuCb = document.getElementById('resource-cross-tu');
     const autoEntryGroup = document.getElementById('auto-entry-points-group');
     const autoEntryCb = document.getElementById('auto-entry-points');
-    const autoEntryHint = document.getElementById('auto-entry-points-hint');
     const smtSection = document.getElementById('smt-section');
     const profileToggle = document.getElementById('analysis-profile-toggle');
     const profileLabel = document.getElementById('analysis-profile-label');
     const ikosCb = document.querySelector('.static-tool[value="ikos"]');
+    const settingsSearch = document.getElementById('settings-search');
+    const settingsBadge = document.getElementById('settings-badge');
+    const settingsNoMatch = document.getElementById('settings-no-match');
+    const resetSettingsBtn = document.getElementById('reset-settings');
+    const resetSettingsLabel = document.getElementById('reset-settings-label');
+    const openVsCodeSettingsBtn = document.getElementById('open-vscode-settings');
+    const smtFields = document.getElementById('smt-fields');
+    const smtSecondaryGroup = document.getElementById('smt-secondary-group');
+    const smtModeSelect = document.getElementById('smt-mode');
     const persistedState = vscode.getState() || {};
+    // While a search forces sections open: the ones to reopen afterwards.
+    let settingsSearchRestore = null;
     let analysisProfile = 'full';
     let findings = [];
     let ignoredCount = 0;
@@ -204,7 +214,9 @@
                 : (lastFileName || 'Open a C/C++ file to analyse');
         }
         [onlyDirGroup, excludeDirGroup].forEach(group => {
-            if (group) { group.classList.toggle('is-hidden', !workspace); }
+            if (!group) { return; }
+            group.classList.toggle('is-disabled', !workspace);
+            group.querySelector('input').disabled = !workspace;
         });
         if (!workspace && modeChanged) {
             setValue('only-dir', '');
@@ -217,7 +229,6 @@
         if (crossTuGroup) { crossTuGroup.classList.toggle('is-disabled', !workspace); }
         if (autoEntryCb) { autoEntryCb.disabled = workspace; }
         if (autoEntryGroup) { autoEntryGroup.classList.toggle('is-disabled', workspace); }
-        if (autoEntryHint) { autoEntryHint.hidden = !workspace; }
         saveUiState();
     }
 
@@ -243,6 +254,12 @@
     if (installDepsBtn) {
         installDepsBtn.addEventListener('click', () => {
             vscode.postMessage({ type: 'execute-command', command: 'ctrace.installDependencies' });
+        });
+    }
+
+    if (openVsCodeSettingsBtn) {
+        openVsCodeSettingsBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'open-vscode-settings' });
         });
     }
 
@@ -292,7 +309,13 @@
     function updateSmtControls() {
         const enabled = Boolean(smtEnabled && smtEnabled.checked);
         smtControls.forEach(control => { control.disabled = !enabled; });
+        if (smtFields) { smtFields.classList.toggle('is-hidden', !enabled); }
+        if (smtSecondaryGroup && smtModeSelect) {
+            smtSecondaryGroup.classList.toggle('is-hidden', smtModeSelect.value === 'single');
+        }
     }
+
+    if (smtModeSelect) { smtModeSelect.addEventListener('change', updateSmtControls); }
 
     if (smtEnabled) {
         smtEnabled.addEventListener('change', updateSmtControls);
@@ -369,12 +392,142 @@
         updateAnalysisModeStyles();
         updateSmtControls();
         updateProfileDependentUi();
+        // setScanMode above saved the state before the values were restored.
+        saveUiState();
     }
 
     function saveUiState() {
         vscode.setState({
             uiState: readCtraceUiState(),
             scanWorkspace,
+            openSections: openSectionKeys(),
+        });
+        refreshSettingsIndicators();
+    }
+
+    // ── Settings: modified indicators, search, reset ───────────────────────────
+    function settingSections() {
+        return settingsView ? [...settingsView.querySelectorAll('.config-section')] : [];
+    }
+
+    function openSectionKeys() {
+        return settingsSearchRestore
+            ? [...settingsSearchRestore]
+            : settingSections().filter(section => section.open).map(section => section.dataset.section);
+    }
+
+    function isSettingModified(control) {
+        if (control.type === 'checkbox') { return control.checked !== control.defaultChecked; }
+        if (control.tagName === 'SELECT') {
+            const initial = [...control.options].find(option => option.defaultSelected) || control.options[0];
+            return control.value !== initial.value;
+        }
+        return control.value.trim() !== control.defaultValue;
+    }
+
+    function settingControls(root) {
+        return [...root.querySelectorAll('.setting input, .setting select')];
+    }
+
+    /** A modified setting only counts as active if it applies to this run. */
+    function isSettingActive(control) {
+        return isSettingModified(control) && !control.disabled && !control.closest('.is-hidden');
+    }
+
+    function refreshSettingsIndicators() {
+        if (!settingsView) { return; }
+        let total = 0;
+        settingSections().forEach(section => {
+            const active = settingControls(section).filter(isSettingActive);
+            total += active.length;
+            const count = section.querySelector('.config-count');
+            if (count) {
+                count.textContent = String(active.length);
+                count.hidden = active.length === 0;
+                count.title = `${active.length} changed setting${active.length > 1 ? 's' : ''}`;
+            }
+        });
+        settingControls(settingsView).forEach(control => {
+            control.closest('.setting').classList.toggle('is-modified', isSettingModified(control));
+        });
+        if (settingsBadge) {
+            settingsBadge.textContent = String(total);
+            settingsBadge.hidden = total === 0;
+        }
+        if (settingsBtn) {
+            settingsBtn.title = total > 0 ? `Open settings (${total} changed)` : 'Open settings';
+            settingsBtn.setAttribute('aria-label', settingsBtn.title);
+        }
+        if (resetSettingsBtn) {
+            resetSettingsBtn.disabled = !settingControls(settingsView).some(isSettingModified);
+        }
+    }
+
+    function applySettingsSearch() {
+        const query = settingsSearch ? settingsSearch.value.trim().toLowerCase() : '';
+        if (query && !settingsSearchRestore) {
+            settingsSearchRestore = new Set(settingSections().filter(section => section.open).map(section => section.dataset.section));
+        }
+        let anyVisible = false;
+        settingSections().forEach(section => {
+            const titleMatches = section.querySelector('.config-title').textContent.toLowerCase().includes(query);
+            const rows = [...section.querySelectorAll('.setting')];
+            const matching = rows.filter(row => !query || titleMatches || row.textContent.toLowerCase().includes(query));
+            rows.forEach(row => row.classList.toggle('search-miss', !matching.includes(row)));
+            // A match inside a switched-off group must lead to the switch.
+            if (matching.some(row => row.closest('.is-hidden'))) {
+                section.querySelector('[data-master]')?.classList.remove('search-miss');
+            }
+            const visible = rows.some(row => !row.classList.contains('search-miss') && !row.closest('.is-hidden'));
+            section.classList.toggle('search-miss', !visible);
+            anyVisible = anyVisible || (visible && section.style.display !== 'none');
+            if (query) { section.open = true; }
+        });
+        if (!query && settingsSearchRestore) {
+            const restore = settingsSearchRestore;
+            settingsSearchRestore = null;
+            settingSections().forEach(section => { section.open = restore.has(section.dataset.section); });
+        }
+        if (settingsNoMatch) { settingsNoMatch.hidden = !query || anyVisible; }
+    }
+
+    if (settingsSearch) { settingsSearch.addEventListener('input', applySettingsSearch); }
+    settingSections().forEach(section => {
+        section.addEventListener('toggle', () => { if (!settingsSearchRestore) { saveUiState(); } });
+    });
+    if (Array.isArray(persistedState.openSections)) {
+        settingSections().forEach(section => { section.open = persistedState.openSections.includes(section.dataset.section); });
+    }
+
+    let resetConfirmTimer = null;
+    function disarmReset() {
+        clearTimeout(resetConfirmTimer);
+        resetConfirmTimer = null;
+        if (resetSettingsLabel) { resetSettingsLabel.textContent = 'Reset to defaults'; }
+        resetSettingsBtn?.classList.remove('is-armed');
+    }
+
+    if (resetSettingsBtn) {
+        // Two clicks: a reset wipes values the user may have typed by hand.
+        resetSettingsBtn.addEventListener('click', () => {
+            if (!resetConfirmTimer) {
+                resetSettingsBtn.classList.add('is-armed');
+                if (resetSettingsLabel) { resetSettingsLabel.textContent = 'Click again to confirm'; }
+                resetConfirmTimer = setTimeout(disarmReset, 3000);
+                return;
+            }
+            disarmReset();
+            settingControls(settingsView).forEach(control => {
+                if (control.type === 'checkbox') {
+                    control.checked = control.defaultChecked;
+                } else if (control.tagName === 'SELECT') {
+                    control.selectedIndex = Math.max(0, [...control.options].findIndex(option => option.defaultSelected));
+                } else {
+                    control.value = control.defaultValue;
+                }
+            });
+            updateSmtControls();
+            saveUiState();
         });
     }
 
@@ -531,6 +684,7 @@
                 break;
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
+                saveUiState();
                 break;
             case 'stack-data':
                 handleStackData(msg.data);
