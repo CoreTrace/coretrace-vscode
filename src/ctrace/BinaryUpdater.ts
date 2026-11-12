@@ -2,9 +2,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as tar from 'tar';
+import * as cp from 'child_process';
+import { promisify } from 'util';
 import { pipeline } from 'stream/promises';
 import { Readable, Transform } from 'stream';
 import { locateBinary, locateBinaryOnPath } from './BinaryLocator';
+
+const execFileAsync = promisify(cp.execFile);
 
 const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrace/releases/latest';
 
@@ -91,7 +95,7 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
                     cancellable: false
                 }, async (progress) => {
                     output.appendLine(`Downloading CoreTrace release ${latestVersion} from GitHub...`);
-                    await downloadAndExtract(assetInfo.url, binDir, progress);
+                    await downloadAndExtract(assetInfo.url, assetInfo.name, binDir, progress);
                     await Promise.all([
                         context.globalState.update('coretrace-version', latestVersion),
                         context.globalState.update('coretrace-last-failed-update-check', undefined)
@@ -127,32 +131,48 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     return await locateBinaryOnPath();
 }
 
-function getAssetForPlatform(assets: any[]): { name: string; url: string } | null {
+const ARCHIVE_EXTENSIONS: Record<string, string[]> = {
+    // macOS releases ship a disk image; hdiutil is always available there.
+    'darwin': ['.dmg', '.tar.gz'],
+};
+const KNOWN_ARCHS = ['amd64', 'x86_64', 'x64', 'arm64', 'aarch64'];
+
+/**
+ * Picks the release file for a platform. A file built for another CPU is
+ * never returned: it would download fine and then fail to run.
+ */
+export function getAssetForPlatform(
+    assets: any[],
+    platform: string = process.platform,
+    nodeArch: string = process.arch
+): { name: string; url: string } | null {
     const osMap: Record<string, string[]> = {
         'win32': ['windows', 'linux'], // Windows executes via WSL, so fall back to linux if no native windows binary exists
         'linux': ['linux'],
         'darwin': ['darwin', 'macos']
     };
-    const archMap: Record<string, string> = {
-        'x64': 'amd64',
-        'arm64': 'arm64'
+    const archMap: Record<string, string[]> = {
+        'x64': ['amd64', 'x86_64', 'x64'],
+        'arm64': ['arm64', 'aarch64']
     };
-    
-    const osList = osMap[process.platform] || [process.platform];
-    const arch = archMap[process.arch] || process.arch;
-    
+
+    const osList = osMap[platform] || [platform];
+    const archs = archMap[nodeArch] || [nodeArch];
+    const extensions = ARCHIVE_EXTENSIONS[platform] || ['.tar.gz'];
+    const isArchive = (name: string) => extensions.some(ext => name.endsWith(ext));
+
     for (const os of osList) {
-        // First try exact matches (os + arch + .tar.gz)
+        // First try exact matches (os + arch + archive)
         for (const asset of assets) {
-            const name = asset.name.toLowerCase();
-            if (name.includes(os) && name.includes(arch) && name.endsWith('.tar.gz')) {
+            const name = String(asset.name).toLowerCase();
+            if (name.includes(os) && archs.some(arch => name.includes(arch)) && isArchive(name)) {
                 return { name: asset.name, url: asset.browser_download_url };
             }
         }
-        // Fallback for older formats (os + .tar.gz)
+        // Fallback for older formats that do not name a CPU (os + archive)
         for (const asset of assets) {
-            const name = asset.name.toLowerCase();
-            if (name.includes(os) && name.endsWith('.tar.gz')) {
+            const name = String(asset.name).toLowerCase();
+            if (name.includes(os) && isArchive(name) && !KNOWN_ARCHS.some(arch => name.includes(arch))) {
                 return { name: asset.name, url: asset.browser_download_url };
             }
         }
@@ -160,7 +180,35 @@ function getAssetForPlatform(assets: any[]): { name: string; url: string } | nul
     return null;
 }
 
-async function downloadAndExtract(url: string, destDir: string, progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
+/** Folders of the release layout. `libexec` holds helper analyzers on macOS. */
+export const INSTALL_FOLDERS = ['bin', 'lib', 'config', 'libexec'];
+
+/**
+ * Copies the content of a macOS disk image into `targetDir`, without the
+ * single top-level folder the release wraps everything in (like tar's strip: 1).
+ */
+async function extractDmg(dmgPath: string, targetDir: string): Promise<void> {
+    const mountPoint = path.join(path.dirname(dmgPath), 'mnt');
+    await fs.promises.mkdir(mountPoint, { recursive: true });
+    await execFileAsync('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mountPoint, dmgPath]);
+    try {
+        const source = await dmgContentRoot(mountPoint);
+        // ditto keeps symlinks and permissions, which the dylibs rely on.
+        await execFileAsync('ditto', [source, targetDir]);
+    } finally {
+        await execFileAsync('hdiutil', ['detach', mountPoint, '-force']).catch(() => { /* already unmounted */ });
+    }
+}
+
+/** The folder holding bin/, lib/…: the volume itself, or its single top-level folder. */
+export async function dmgContentRoot(mountPoint: string): Promise<string> {
+    const entries = await fs.promises.readdir(mountPoint, { withFileTypes: true });
+    if (entries.some(entry => entry.isDirectory() && entry.name === 'bin')) { return mountPoint; }
+    const folders = entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.'));
+    return folders.length === 1 ? path.join(mountPoint, folders[0].name) : mountPoint;
+}
+
+async function downloadAndExtract(url: string, assetName: string, destDir: string, progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
     const timestamp = Date.now();
     
     const token = process.env.GITHUB_TOKEN || '';
@@ -212,19 +260,30 @@ async function downloadAndExtract(url: string, destDir: string, progress: vscode
     const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
 
     try {
-        const extractStream = tar.x({
-            C: tmpDir,
-            strip: 1
-        });
+        if (assetName.toLowerCase().endsWith('.dmg')) {
+            // hdiutil cannot read from a stream: save the image, then mount it.
+            const dmgDir = path.join(tmpDir, 'dmg');
+            await fs.promises.mkdir(dmgDir, { recursive: true });
+            const dmgPath = path.join(dmgDir, 'coretrace.dmg');
+            await pipeline(Readable.fromWeb(response.body as any), progressStream, fs.createWriteStream(dmgPath));
+            clearTimeout(timeoutId);
+            if (progressListener) { progressListener("Extracting..."); }
+            await extractDmg(dmgPath, tmpDir);
+        } else {
+            const extractStream = tar.x({
+                C: tmpDir,
+                strip: 1
+            });
 
-        await pipeline(Readable.fromWeb(response.body as any), progressStream, extractStream);
+            await pipeline(Readable.fromWeb(response.body as any), progressStream, extractStream);
+        }
         clearTimeout(timeoutId);
 
         if (progressListener) { progressListener("Finishing..."); }
 
-        // Move the extracted layout (bin, lib, config) into destDir so ctrace can resolve its shared libraries
-        // via INSTALL_RPATH "$ORIGIN/../lib"
-        for (const folder of ['bin', 'lib', 'config']) {
+        // Move the extracted layout (bin, lib, config, libexec) into destDir so ctrace can resolve its shared
+        // libraries via INSTALL_RPATH "$ORIGIN/../lib" (Linux) or "@loader_path/../lib" (macOS)
+        for (const folder of INSTALL_FOLDERS) {
             const src = path.join(tmpDir, folder);
             const dst = path.join(destDir, folder);
             if (fs.existsSync(src)) {

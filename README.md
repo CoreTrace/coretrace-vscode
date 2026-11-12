@@ -68,6 +68,7 @@ The **Stack Tree** tab shows how much stack your functions use, in a layout made
 - **Call tree**: an expandable tree of who calls what, heaviest callees first. A bar behind each value shows its share of the highest peak, and the heaviest call path is highlighted in red. The flame button jumps straight to it.
 - **Ranking**: every function sorted by peak stack.
 - **Filter** by function or file name: matches stay in place in the tree with the calls leading to them.
+- **Jump to source**: clicking a function opens its file at its definition.
 - **Details**: selecting a function shows its local and peak stack, its callers and callees (click one to jump to it), and a link to the source.
 - **Keyboard**: arrow keys navigate and open rows, `Enter` opens the source (double-click works too).
 - Recursive calls end on a row marked `↻` instead of expanding forever.
@@ -87,7 +88,7 @@ The gear icon opens the analysis settings, grouped by purpose:
 - **Operating Systems**:
   - **Linux / macOS**: Supported natively.
   - **Windows**: Requires **WSL** (Windows Subsystem for Linux, e.g. Ubuntu). If you do not have WSL installed, run `wsl --install` in PowerShell.
-- **CoreTrace CLI**: The extension automatically downloads and updates the latest `ctrace` binaries from GitHub Releases upon first launch.
+- **CoreTrace CLI**: The extension automatically downloads and updates the latest `ctrace` binaries from GitHub Releases upon first launch. Prebuilt binaries exist for Linux (x64, arm64) and Apple Silicon Macs; on an Intel Mac, build `ctrace` from source and put it on your `PATH`.
 - **Analyzers (Optional but Recommended)**: To enable all static analysis engines (`cppcheck`, `flawfinder`, `ikos`, `tscancode`), run the built-in installer via the sidebar or command palette.
 
 ---
