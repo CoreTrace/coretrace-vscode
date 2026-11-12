@@ -187,7 +187,7 @@ export const INSTALL_FOLDERS = ['bin', 'lib', 'config', 'libexec'];
  * Copies the content of a macOS disk image into `targetDir`, without the
  * single top-level folder the release wraps everything in (like tar's strip: 1).
  */
-async function extractDmg(dmgPath: string, targetDir: string): Promise<void> {
+export async function extractDmg(dmgPath: string, targetDir: string): Promise<void> {
     const mountPoint = path.join(path.dirname(dmgPath), 'mnt');
     await fs.promises.mkdir(mountPoint, { recursive: true });
     await execFileAsync('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mountPoint, dmgPath]);
@@ -208,7 +208,7 @@ export async function dmgContentRoot(mountPoint: string): Promise<string> {
     return folders.length === 1 ? path.join(mountPoint, folders[0].name) : mountPoint;
 }
 
-async function downloadAndExtract(url: string, assetName: string, destDir: string, progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
+export async function downloadAndExtract(url: string, assetName: string, destDir: string, progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
     const timestamp = Date.now();
     
     const token = process.env.GITHUB_TOKEN || '';

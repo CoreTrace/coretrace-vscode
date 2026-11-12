@@ -42,3 +42,7 @@ jobs:
       - name: Run tests (Windows/macOS)
         if: runner.os != 'Linux'
         run: npm test
+        env:
+          # On macOS, also download the latest ctrace release and run it.
+          CORETRACE_E2E_DOWNLOAD: '1'
+          GITHUB_TOKEN: ${{ github.token }}
