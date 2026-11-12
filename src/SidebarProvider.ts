@@ -159,7 +159,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
               break;
             }
             const doc = await vscode.workspace.openTextDocument(openUri);
-            const editor = await vscode.window.showTextDocument(doc);
+            // The Stack Tree keeps the focus so arrow keys still walk the tree.
+            const editor = await vscode.window.showTextDocument(doc, { preserveFocus: data.preserveFocus === true });
             const safeLine = Number.isFinite(data.line) ? Math.max(0, Math.floor(data.line)) : 0;
             const line = Math.min(safeLine, Math.max(0, doc.lineCount - 1));
             const range = new vscode.Range(line, 0, line, 0);

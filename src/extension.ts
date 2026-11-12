@@ -130,8 +130,9 @@ export function activate(context: vscode.ExtensionContext) {
         if (!p) {
             const extPath = context.extensionUri.fsPath;
             const globalStorage = context.globalStorageUri.fsPath;
-            const hint = process.platform === 'darwin'
-                ? '\nCoreTrace publishes no prebuilt macOS binary: build it from https://github.com/CoreTrace/coretrace and put `ctrace` on your PATH.'
+            // Releases include an Apple Silicon build only.
+            const hint = process.platform === 'darwin' && process.arch !== 'arm64'
+                ? '\nCoreTrace publishes no prebuilt binary for Intel Macs: build it from https://github.com/CoreTrace/coretrace and put `ctrace` on your PATH.'
                 : '';
             vscode.window.showErrorMessage(
                 `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\n- PATH${hint}\nSee the "Ctrace" Output channel for details.`
@@ -482,7 +483,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     sourceCode = await fs.promises.readFile(fp, 'utf8');
                                 } catch { /* ignore */ }
 
-                                let stackReport = parseStackReport(reportContent, sourceCode) ?? parseStackReport(stdout, sourceCode);
+                                let stackReport = parseStackReport(reportContent, sourceCode, fp) ?? parseStackReport(stdout, sourceCode, fp);
 
                                 // If ctrace was run with --sarif-format, ctrace >= 0.80 suppresses the stack analyzer
                                 // rendering from stdout/report-file into SARIF-only results (no function/stack metrics).
@@ -504,7 +505,7 @@ export function activate(context: vscode.ExtensionContext) {
                                             try {
                                                 const stackRes = await runCommand(stackCmd, extensionPath, token, timeoutMs);
                                                 const stackOut = (stackRes.stdout || '') + (stackRes.stderr || '');
-                                                stackReport = parseStackReport(stackOut, sourceCode);
+                                                stackReport = parseStackReport(stackOut, sourceCode, fp);
                                             } finally {
                                                 stackTemp.forEach(tryDelete);
                                             }

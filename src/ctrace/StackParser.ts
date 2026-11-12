@@ -4,7 +4,12 @@ import { cleanFunctionName } from '../utils/functionCleaner';
 /**
  * Parses ctrace-stack-analyzer outputs from either JSON report content or plaintext IR mode.
  */
-export function parseStackReport(reportContent: string, sourceCode?: string): StackReport | null {
+/**
+ * @param sourceFile Path of the analysed file. Functions defined in
+ *                   `sourceCode` that the report gives no file for get it,
+ *                   so the Stack Tree can jump to them.
+ */
+export function parseStackReport(reportContent: string, sourceCode?: string, sourceFile?: string): StackReport | null {
     if (!reportContent || !reportContent.trim()) {
         return null;
     }
@@ -63,7 +68,7 @@ export function parseStackReport(reportContent: string, sourceCode?: string): St
 
     // Locate function lines in source code if available
     if (sourceCode) {
-        attachSourceLines(functions, sourceCode);
+        attachSourceLines(functions, sourceCode, sourceFile);
     }
 
     // Infer call graph and call chains
@@ -124,11 +129,12 @@ function parseIrReportText(text: string): StackFunction[] {
 /**
  * Searches the source file for function definition line numbers.
  */
-function attachSourceLines(functions: StackFunction[], sourceCode: string): void {
+function attachSourceLines(functions: StackFunction[], sourceCode: string, sourceFile?: string): void {
     for (const fn of functions) {
         const definition = findFunctionDefinition(sourceCode, fn.name);
         if (definition) {
             fn.line = sourceCode.slice(0, definition.index).split('\n').length;
+            if (!fn.file && sourceFile) { fn.file = sourceFile; }
         }
     }
 }

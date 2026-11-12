@@ -475,7 +475,8 @@ body {
     justify-content: center;
     gap: 8px;
     flex: 1;
-    padding: 11px 16px;
+    min-width: 0;
+    padding: 11px 12px;
     background: linear-gradient(135deg, #b51425, var(--coretrace-red));
     color: #fff;
     border: 1px solid var(--coretrace-red-bright);
@@ -517,6 +518,16 @@ body {
     height: 16px;
     flex-shrink: 0;
 }
+
+/* The label gives way before the icon: a long "Analysing…" or "Downloading (42%)"
+   is shortened instead of pushing the spinner out of the button. */
+.btn-run span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btn-run.running span { white-space: nowrap; }
 
 /* Icon swap via CSS — no JS icon recreation needed */
 .btn-run .icon-running { display: none; }
@@ -1117,6 +1128,9 @@ body {
 }
 
 .vuln-sev {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font-size: 0.68em;
     font-weight: 600;
     padding: 1px 6px;
@@ -1124,6 +1138,12 @@ body {
     flex-shrink: 0;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+.vuln-sev svg {
+    width: 10px;
+    height: 10px;
+    flex-shrink: 0;
 }
 
 .sev-error   { background: rgba(227, 38, 54, 0.2); color: #ff6b78; border: 1px solid rgba(255, 70, 86, 0.5); }
@@ -1956,6 +1976,16 @@ select:focus-visible {
 }
 
 .stack-details-open:hover { text-decoration: underline; }
+
+/* Beside the two tool menus the run button is too narrow for its running
+   label: give it its own row on a sidebar of usual width. */
+@media (max-width: 380px) {
+    .run-controls { flex-wrap: wrap; }
+    .btn-run { flex: 1 1 100%; }
+    .analysis-mode-row { flex: 1 1 100%; }
+    .analysis-mode-menu { flex: 1; }
+    .analysis-mode-toggle { width: 100%; justify-content: center; }
+}
 
 @media (max-width: 260px) {
     .sidebar { padding: 10px 8px; gap: 8px; }

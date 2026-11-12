@@ -1061,6 +1061,7 @@
             return;
         }
         selectStackRow(row);
+        openStackFunction(row.dataset.id, true);
         // A click opens but never closes: selecting a parent to read its
         // details must not hide its callees.
         if (row.getAttribute('aria-expanded') === 'false') { toggleStackRow(key); }
@@ -1259,10 +1260,10 @@
         }
     }
 
-    function openStackFunction(id) {
+    function openStackFunction(id, preserveFocus = false) {
         const node = stackModel?.nodes.get(id);
         if (node?.file) {
-            vscode.postMessage({ type: 'open-file', path: node.file, line: node.line ? node.line - 1 : 0 });
+            vscode.postMessage({ type: 'open-file', path: node.file, line: node.line ? node.line - 1 : 0, preserveFocus });
         }
     }
 

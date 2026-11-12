@@ -2,6 +2,19 @@ import * as assert from 'assert';
 import { parseStackReport, mergeStackReports } from '../ctrace/StackParser';
 
 suite('StackParser Test Suite', () => {
+    test('functions defined in the analysed file get its path, so the Stack Tree can jump to them', () => {
+        const report = [
+            'Function: helper ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 16 bytes', '',
+            'Function: from_header ', '\tlocal stack: 8 bytes', '\tmax stack (including callees): 8 bytes', '',
+        ].join('\n');
+        const source = '#include "h.h"\n\nint helper(int n) {\n  return from_header(n);\n}\n';
+        const parsed = parseStackReport(report, source, '/w/src/app.c');
+        assert.deepStrictEqual(parsed?.functions.map(fn => [fn.name, fn.file, fn.line]), [
+            ['helper', '/w/src/app.c', 3],
+            ['from_header', undefined, undefined],
+        ]);
+    });
+
     test('flags only the recursive functions in a plaintext report', () => {
         const report = [
             'Function: loop ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 32 bytes',
