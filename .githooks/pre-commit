@@ -1,0 +1,11 @@
+#!/bin/sh
+# Activé par `npm run hooks:install`. Contrôles rapides avant chaque commit ; la CI refait tout, avec npm audit.
+set -e
+
+if git diff --cached -U0 | grep '^+' | grep -E 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[abprs]-[A-Za-z0-9-]{10,}'; then
+  echo "pre-commit : secret probable dans les lignes ajoutées, commit refusé." >&2
+  exit 1
+fi
+
+node node_modules/typescript/bin/tsc --noEmit -p .
+node scripts/debt-report.cjs --check --no-audit

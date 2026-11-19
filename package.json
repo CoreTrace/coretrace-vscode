@@ -170,7 +170,11 @@
     "watch": "npm run copy-lucide && tsc -watch -p ./",
     "copy-lucide": "node scripts/copy-lucide.cjs",
     "test": "vscode-test",
-    "pretest": "npm run compile"
+    "pretest": "npm run compile",
+    "debt": "node scripts/debt-report.cjs",
+    "debt:check": "node scripts/debt-report.cjs --check",
+    "debt:baseline": "node scripts/debt-report.cjs --write",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
