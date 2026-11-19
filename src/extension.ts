@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
-import { locateBinary } from './ctrace/BinaryLocator';
 import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';

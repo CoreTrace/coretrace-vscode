@@ -259,8 +259,6 @@ function matchBraces(text: string, startIndex: number): unknown {
  * Maps properties from a ctrace stack analyzer payload to equivalent SARIF fields.
  */
 function convertStackAnalyzerToSarif(stackObj: StackAnalyzerOutput): SarifLog {
-    const defaultUri = stackObj.meta?.inputFile || stackObj.meta?.inputFiles?.[0];
-
     const results: SarifResult[] = (stackObj.diagnostics ?? []).map((d: StackAnalyzerDiagnostic) => ({
         ruleId: d.ruleId ?? 'StackIssue',
         level: severityToSarifLevel(d.severity),

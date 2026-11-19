@@ -196,16 +196,6 @@ function requiredReportFile(value?: string): string {
     return reportFile;
 }
 
-function compileArgs(value: unknown, prefix?: '-I' | '-D'): string[] {
-    if (typeof value !== 'string') { return []; }
-
-    return value
-        .split(/[\n,;]+/)
-        .map(item => item.trim())
-        .filter(Boolean)
-        .map(item => `--compile-arg=${prefix ?? ''}${item}`);
-}
-
 function profileArgs(uiState: CtraceUIState): string[] {
     return uiState.analysisProfile === undefined
         ? []

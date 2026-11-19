@@ -1,9 +1,9 @@
 {
-  "deadCode": 4,
+  "deadCode": 0,
   "satd": 0,
   "largeFiles": 3,
-  "vulnCritical": 1,
-  "vulnHigh": 3,
+  "vulnCritical": 0,
+  "vulnHigh": 1,
   "vulnModerate": 6,
   "vulnLow": 1
 }
