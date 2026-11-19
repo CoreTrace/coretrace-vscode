@@ -1,0 +1,8 @@
+# Les règles données aux agents IA et le quality gate demandent une revue humaine.
+# Ajouter les autres membres de l'équipe à côté de chaque ligne.
+AGENTS.md                 @Arthurvroum
+CLAUDE.md                 @Arthurvroum
+debt-baseline.json        @Arthurvroum
+scripts/debt-report.cjs   @Arthurvroum
+.githooks/                @Arthurvroum
+.github/                  @Arthurvroum
