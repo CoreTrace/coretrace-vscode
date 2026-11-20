@@ -1,17 +1,17 @@
-## Ce qui change
+## What changes
 
 
-## Comment c'est testé
+## How it is tested
 
 
-## Dette
-- [ ] `npm run debt:check` ne signale aucune hausse
-- Dette introduite ou remboursée :
+## Debt
+- [ ] `npm run debt:check` reports no increase
+- Debt introduced or paid down:
 
-## IA
-- [ ] Assistée par IA (ajouter le label `ai-assisted` et le trailer `Assisted-by: <outil>`)
-- [ ] J'ai relu et compris tout le code généré
+## AI
+- [ ] AI-assisted (add the `ai-assisted` label and the `Assisted-by: <tool>` trailer)
+- [ ] I have read and understood all generated code
 
-## Dépendances
-- [ ] Aucune nouvelle dépendance
-- Sinon, nom et licence :
+## Dependencies
+- [ ] No new dependency
+- Otherwise, name and license:

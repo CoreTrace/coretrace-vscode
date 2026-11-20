@@ -45,7 +45,7 @@ CoreTrace VS Code extension (strict TypeScript, Node 20, VS Code API ^1.82). Lic
 - Do not copy code from an external source without stating its origin and license.
 
 ## Pull requests
-- If an AI wrote part of the code: tick « Assistée par IA » in the PR template, add the `ai-assisted` label
+- If an AI wrote part of the code: tick "AI-assisted" in the PR template, add the `ai-assisted` label
   and the commit trailer `Assisted-by: <tool>`.
 - Describe what changed, how it is tested, and the debt introduced or paid down.
 
