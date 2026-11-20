@@ -182,4 +182,5 @@ The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`). P
 
 ## 📄 License
 
-Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+Distributed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Versions up to
+`v0.3.5` were published with the GPL-3.0 license file.
