@@ -3,6 +3,7 @@
   "displayName": "CoreTrace",
   "description": "Integration for CoreTrace CLI",
   "version": "0.3.5",
+  "license": "Apache-2.0",
   "publisher": "CoreTrace",
   "icon": "icon.png",
   "galleryBanner": {
