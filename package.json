@@ -170,7 +170,10 @@
     "watch": "npm run copy-lucide && tsc -watch -p ./",
     "copy-lucide": "node scripts/copy-lucide.cjs",
     "test": "vscode-test",
-    "pretest": "npm run compile"
+    "pretest": "npm run compile",
+    "licenses": "node scripts/license-check.cjs",
+    "licenses:baseline": "node scripts/license-check.cjs --update",
+    "test:licenses": "node --test scripts/license-check.test.cjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

@@ -46,3 +46,36 @@ jobs:
           # On macOS, also download the latest ctrace release and run it.
           CORETRACE_E2E_DOWNLOAD: '1'
           GITHUB_TOKEN: ${{ github.token }}
+
+  license-gate:
+    name: License gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test the license check
+        run: npm run test:licenses
+
+      - name: Check licenses against policy and baseline
+        run: npm run licenses
+
+      - name: Generate SBOM (CycloneDX)
+        if: always()
+        run: npm sbom --omit dev --sbom-format cyclonedx > sbom.cdx.json
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json

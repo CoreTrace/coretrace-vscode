@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Every dependency bump opens a PR, so the license gate in CI reviews it.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
