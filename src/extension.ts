@@ -8,7 +8,7 @@ import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
-import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, prepareScanDirectory, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
@@ -322,6 +322,26 @@ export function activate(context: vscode.ExtensionContext) {
             output.show(true);
             output.clear();
 
+            // ── Scan files ───────────────────────────────────────────────────
+            // Written before anything runs: without the config, ctrace would
+            // run without the requested macros, include paths or filters.
+            let scanDir: string;
+            let configPath: string;
+            let hasConfig: boolean;
+            try {
+                scanDir = prepareScanDirectory(context.globalStorageUri.fsPath);
+                configPath = createConfigPath(scanDir);
+                hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
+            } catch (e) {
+                const message = e instanceof Error ? e.message : String(e);
+                output.appendLine(`[ctrace] ${message}`);
+                vscode.window.showErrorMessage(message);
+                isRunning = false;
+                sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis not started', detail: message });
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
+
             // ── Run with progress ────────────────────────────────────────────
             await vscode.window.withProgress(
                 {
@@ -342,9 +362,6 @@ export function activate(context: vscode.ExtensionContext) {
                         clearDiagnostics(diagnosticCollection);
                         StackManager.instance.clear();
                     }
-
-                    const configPath = createConfigPath(extensionPath);
-                    const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
 
                     const publishStack = (stackReport: any) => {
                         allStackReports.push(stackReport);
@@ -424,7 +441,7 @@ export function activate(context: vscode.ExtensionContext) {
                             });
 
                             // Build & run command for this file.
-                            const reportPath = createReportPath(extensionPath);
+                            const reportPath = createReportPath(scanDir);
                             const args = buildCtraceArgs({
                                 ...effectiveUiState,
                                 reportFile: reportPath,

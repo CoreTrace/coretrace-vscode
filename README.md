@@ -174,7 +174,7 @@ npm run compile
 npm test
 ```
 
-The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`). Press `F5` in VS Code to start an Extension Development Host with the extension loaded.
+The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`), in two configurations: `unit` without a folder, and `workspace` with `src/test-workspace/fixture` open, for commands like Run Analysis that need one. Press `F5` in VS Code to start an Extension Development Host with the extension loaded.
 
 `src/test/params.integration.test.ts` runs every analysis parameter through a real `ctrace`. It uses the binary named by `CTRACE_BIN`, or a `ctrace` file at the repository root, and is skipped when there is none, as on CI.
 
