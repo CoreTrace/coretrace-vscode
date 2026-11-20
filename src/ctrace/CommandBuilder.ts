@@ -24,9 +24,19 @@ export function parseAndValidateParams(raw: string): string[] {
         tokens.push(m[1].replace(/^["']|["']$/g, ''));
     }
 
-    const safe = /^--?[a-zA-Z0-9][a-zA-Z0-9._\-:/\\=,@]*$/;
+    // The name is strict. The value only has to stay free of what a shell
+    // interprets: every token is single-quoted again before use, and real
+    // paths contain spaces, parentheses, ~ (C:\Users\RUNNER~1) or accents.
+    const safeName = /^--?[a-zA-Z0-9][a-zA-Z0-9._\-]*$/;
+    const unsafeValue = /[$`;&|<>'"\r\n\0]/;
+    // Entry points are function names, never paths.
+    const functionList = /^[a-zA-Z0-9_:~,]*$/;
     for (const token of tokens) {
-        if (!safe.test(token)) {
+        const eq = token.indexOf('=');
+        const name = eq < 0 ? token : token.slice(0, eq);
+        const value = eq < 0 ? '' : token.slice(eq + 1);
+        if (!safeName.test(name) || unsafeValue.test(value)
+            || (name === '--entry-points' && !functionList.test(value))) {
             throw new Error(`Unsafe CLI parameter rejected: "${token}"`);
         }
     }

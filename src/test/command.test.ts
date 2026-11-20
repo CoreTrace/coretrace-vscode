@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
-import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded } from '../ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded, shellQuoteArgs } from '../ctraceRunner';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
 suite('CommandBuilder Test Suite', () => {
@@ -35,6 +35,22 @@ suite('CommandBuilder Test Suite', () => {
             assert.throws(() => {
                 parseAndValidateParams(payload);
             }, /Unsafe CLI/, `Failed to block payload: ${payload}`);
+        }
+    });
+
+    test('Keeps real Windows paths: 8.3 names, spaces, parentheses, accents', () => {
+        const args = [
+            '--report-file=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\scan\\.ctrace-report-1.txt',
+            '--config=C:\\Users\\Jean Dupont\\Program Files (x86)\\réglages.json',
+            '--entry-points=main,ns::run',
+            '--static',
+        ];
+        assert.deepStrictEqual(parseAndValidateParams(shellQuoteArgs(args)), args);
+    });
+
+    test('Rejects shell syntax hidden in a value or a name', () => {
+        for (const args of [['--config=a;b'], ['--config=a`id`'], ['--config=a|b'], ['--config=a>b'], ['--x$(id)=1'], ['--config=a&b']]) {
+            assert.throws(() => parseAndValidateParams(shellQuoteArgs(args)), /Unsafe CLI/, args[0]);
         }
     });
 
