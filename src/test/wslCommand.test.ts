@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildWindowsCommandForTesting, setMockWslAvailableForTesting, setWslExecForTesting } from '../ctrace/CommandBuilder';
+import { buildWindowsCommandForTesting, executionDistro, setMockWslAvailableForTesting, setWslExecForTesting } from '../ctrace/CommandBuilder';
 import { shellQuoteArgs } from '../ctraceRunner';
 
 /**
@@ -64,6 +64,22 @@ suite('WSL command Test Suite', () => {
         assert.ok(text.includes("--input '/home/me/My Project/main.c'"), text);
         assert.ok(text.includes("'--report-file=/mnt/c/My Project/report.json'"), text);
         assert.match(built.command, /^wsl -d "Debian" --exec sh "/, 'the non-default distribution must be used');
+    });
+
+    test('the analyzers are checked in the distribution that runs the scan', () => {
+        // Debian is not the default: a scan of its files runs, and must be checked, there.
+        assert.strictEqual(executionDistro('\\\\wsl$\\Debian\\home\\me\\main.c'), 'Debian');
+        assert.strictEqual(executionDistro('\\\\wsl.localhost\\debian\\home\\me\\main.c'), 'Debian');
+        // The default distribution, an ordinary Windows path, or an unknown distribution keep the default (null).
+        assert.strictEqual(executionDistro('\\\\wsl$\\Ubuntu\\home\\me\\main.c'), null);
+        assert.strictEqual(executionDistro('C:\\My Project\\main.c'), null);
+        assert.strictEqual(executionDistro('\\\\wsl$\\Arch\\home\\me\\main.c'), null);
+        assert.strictEqual(executionDistro(undefined), null);
+    });
+
+    test('without wsl.exe, the default distribution is kept', () => {
+        setWslExecForTesting(() => { throw new Error('wsl.exe not found'); });
+        assert.strictEqual(executionDistro('\\\\wsl$\\Debian\\home\\me\\main.c'), null);
     });
 
     test('an unsafe argument is still rejected, and leaves no temporary copy behind', async () => {

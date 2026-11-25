@@ -146,6 +146,33 @@ function parseWslUNC(p: string): { distro: string; internalPath: string } | null
     return null;
 }
 
+/**
+ * The WSL distribution a scan of these paths runs in: the one named by a
+ * WSL path (\\wsl$\Debian\...) when it is not the default one, else null
+ * for the default distribution. Same rule as trySmartDistroExecution(), so
+ * the analyzers are checked and installed where they will run.
+ */
+export function executionDistro(...paths: (string | undefined)[]): string | null {
+    const detected = paths.map(p => p ? parseWslUNC(p) : null).find(Boolean)?.distro;
+    if (!detected) { return null; }
+    try {
+        const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
+        const lines = wslExec(['-l', '-v'], { encoding: 'utf16le', timeout: 5000 }).toString().split(/[\r\n]+/).filter(l => l.trim());
+        let defaultDistro = '';
+        let matched = '';
+        for (const line of lines) {
+            if (line.includes('NAME') && line.includes('STATE')) { continue; }
+            const name = clean(line.replace('*', '').trim().split(/\s+/)[0] ?? '');
+            if (line.trim().startsWith('*')) { defaultDistro = name; }
+            if (name.toLowerCase() === detected.toLowerCase()) { matched = name; }
+        }
+        if (!matched || matched === defaultDistro) { return null; }
+        return resolveDistroName(matched);
+    } catch {
+        return null;
+    }
+}
+
 let cachedWslAvailable: { result: boolean; timestamp: number } | null = null;
 let mockWslAvailable: boolean | null = null;
 
