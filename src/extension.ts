@@ -679,8 +679,18 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('ctrace.clearAnalysisCache', async () => {
+            // A running scan would write its results back right after.
+            if (isRunning) {
+                vscode.window.showWarningMessage('An analysis is running: cancel it or wait for it to finish, then clear the cache.');
+                return;
+            }
+            // Waits for the cache load at startup and for writes still in flight.
             await clearCache();
             StackManager.instance.clear();
+            // The ignore-list listener republishes these: they must go too.
+            lastSarifByFile = new Map();
+            republishPending = false;
+            clearDiagnostics(diagnosticCollection);
             await findingsStore.clear();
             sidebarProvider.postMessage({ type: 'clear-results' });
             vscode.window.showInformationMessage('Ctrace analysis cache and saved results cleared.');
