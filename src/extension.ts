@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
+import { buildCommand, executionDistro, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
@@ -147,7 +147,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.installDependencies', async () => {
+        vscode.commands.registerCommand('ctrace.installDependencies', async (arg?: { distro?: string | null }) => {
             if (process.platform === 'win32' && !isWslAvailable()) {
                 output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to install dependencies on Windows.');
                 promptWslInstallation();
@@ -161,7 +161,14 @@ export function activate(context: vscode.ExtensionContext) {
                     cancellable: false,
                 },
                 async (progress) => {
-                    await installDependencies(output, progress);
+                    // Install where the scan runs: the distribution a preflight
+                    // asked for, else the one of the active file (WSL paths).
+                    const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
+                    const distro = arg && 'distro' in arg
+                        ? arg.distro ?? null
+                        : process.platform === 'win32' ? executionDistro(activeFile) : null;
+                    if (distro) { output.appendLine(`[ctrace] Installing the analyzers in the WSL distribution ${distro}.`); }
+                    await installDependencies(output, progress, distro);
                 }
             );
         })
@@ -259,7 +266,11 @@ export function activate(context: vscode.ExtensionContext) {
             const requestedStaticTools: string[] = (uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'])
                 .filter(tool => tool !== 'coretrace-python-analyzer');
             if (hasCFiles && uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
-                const depStatus = await checkDependencies();
+                // The analyzers are checked in the distribution that will run the scan.
+                const toolsDistro = process.platform === 'win32'
+                    ? executionDistro(scanWorkspace ? workspaceRoot : filesToAnalyze[0])
+                    : null;
+                const depStatus = await checkDependencies(toolsDistro);
                 const missingRequested = requestedStaticTools.filter((t) => depStatus.missing.includes(t));
                 if (missingRequested.length > 0) {
                     const action = await vscode.window.showWarningMessage(
@@ -269,7 +280,7 @@ export function activate(context: vscode.ExtensionContext) {
                     );
                     if (action === 'Install Analyzers') {
                         sidebarProvider.postMessage({ type: 'analysis-done' });
-                        vscode.commands.executeCommand('ctrace.installDependencies');
+                        vscode.commands.executeCommand('ctrace.installDependencies', { distro: toolsDistro });
                         return;
                     }
                 }

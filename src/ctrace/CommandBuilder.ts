@@ -52,6 +52,23 @@ function shellEscapeArg(arg: string): string {
     return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
+type WslExec = (args: string[], options: { encoding?: BufferEncoding; timeout: number }) => string | Buffer;
+
+let wslExec: WslExec = (args, options) => cp.execFileSync('wsl', args, options);
+
+/**
+ * Replaces the calls to wsl.exe, so the Windows command builders can be
+ * tested on any platform.
+ */
+export function setWslExecForTesting(fake: WslExec | null): void {
+    wslExec = fake ?? ((args, options) => cp.execFileSync('wsl', args, options));
+}
+
+/** The Windows builder, for tests on other platforms (with setMockWslAvailableForTesting). */
+export function buildWindowsCommandForTesting(ctracePath: string, inputFilePath: string, params: string): Promise<BuiltCommand> {
+    return buildWindowsCommand(ctracePath, inputFilePath, params);
+}
+
 /**
  * Converts a Windows-style path to its WSL POSIX equivalent using `wslpath`.
  * Falls back to a simple `/mnt/<drive>/` prefix substitution if the command fails.
@@ -63,7 +80,7 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
             ...(distroName ? ['-d', distroName] : []),
             'wslpath', '-u', normalized,
         ];
-        return cp.execFileSync('wsl', args, { timeout: 5000 }).toString().trim();
+        return wslExec(args, { timeout: 5000 }).toString().trim();
     } catch {
         return normalized.replace(/^([a-zA-Z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
     }
@@ -129,6 +146,33 @@ function parseWslUNC(p: string): { distro: string; internalPath: string } | null
     return null;
 }
 
+/**
+ * The WSL distribution a scan of these paths runs in: the one named by a
+ * WSL path (\\wsl$\Debian\...) when it is not the default one, else null
+ * for the default distribution. Same rule as trySmartDistroExecution(), so
+ * the analyzers are checked and installed where they will run.
+ */
+export function executionDistro(...paths: (string | undefined)[]): string | null {
+    const detected = paths.map(p => p ? parseWslUNC(p) : null).find(Boolean)?.distro;
+    if (!detected) { return null; }
+    try {
+        const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
+        const lines = wslExec(['-l', '-v'], { encoding: 'utf16le', timeout: 5000 }).toString().split(/[\r\n]+/).filter(l => l.trim());
+        let defaultDistro = '';
+        let matched = '';
+        for (const line of lines) {
+            if (line.includes('NAME') && line.includes('STATE')) { continue; }
+            const name = clean(line.replace('*', '').trim().split(/\s+/)[0] ?? '');
+            if (line.trim().startsWith('*')) { defaultDistro = name; }
+            if (name.toLowerCase() === detected.toLowerCase()) { matched = name; }
+        }
+        if (!matched || matched === defaultDistro) { return null; }
+        return resolveDistroName(matched);
+    } catch {
+        return null;
+    }
+}
+
 let cachedWslAvailable: { result: boolean; timestamp: number } | null = null;
 let mockWslAvailable: boolean | null = null;
 
@@ -152,7 +196,7 @@ export function isWslAvailable(): boolean {
         return cachedWslAvailable.result;
     }
     try {
-        const stdout = cp.execFileSync('wsl', ['-l', '-q'], { encoding: 'utf16le', timeout: 5000 });
+        const stdout = wslExec(['-l', '-q'], { encoding: 'utf16le', timeout: 5000 }).toString();
         const clean = stdout.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
         const available = Boolean(clean) && !/no installed distributions|no distribution/i.test(clean);
         cachedWslAvailable = { result: available, timestamp: now };
@@ -203,7 +247,7 @@ function trySmartDistroExecution(
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
         // execFileSync avoids spawning a shell (cmd.exe); encoding:'utf16le' is
         // supported by Node's execFileSync just as it is by execSync.
-        const stdout = cp.execFileSync('wsl', ['-l', '-v'], { encoding: 'utf16le', timeout: 5000 });
+        const stdout = wslExec(['-l', '-v'], { encoding: 'utf16le', timeout: 5000 }).toString();
         const lines = stdout.split(/[\r\n]+/).filter(l => l.trim());
 
         let defaultDistro = '';
@@ -282,7 +326,7 @@ function resolveDistroName(distro: string): string | null {
     const safeDistro = distro.replace(/["'`\\]/g, '');
     if (!safeDistro) { return null; }
     try {
-        cp.execFileSync('wsl', ['-d', safeDistro, 'true'], { timeout: 5000 });
+        wslExec(['-d', safeDistro, 'true'], { timeout: 5000 });
         return safeDistro;
     } catch {
         // fall through
@@ -315,12 +359,7 @@ async function buildFallbackCommand(
     const tempBin   = path.join(os.tmpdir(), `ctrace-bin-${stamp}`);
     const lBin      = `/tmp/ctrace-${stamp}`;
 
-    await fs.promises.copyFile(ctracePath, tempBin);
-    tempFiles.push(tempBin);
-
-    const wBin = toWslPath(tempBin);
-    const wInput = toWslPath(inputFilePath);
-
+    // Validated before the CLI is copied: a rejected argument leaves nothing behind.
     const validatedParamsTokens = parseAndValidateParams(params).map(token => {
         const eqIndex = token.indexOf('=');
         if (eqIndex > 0) {
@@ -333,6 +372,28 @@ async function buildFallbackCommand(
         return token;
     });
     const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
+
+    await fs.promises.copyFile(ctracePath, tempBin);
+    tempFiles.push(tempBin);
+    try {
+        return await finishFallbackCommand(ctracePath, inputFilePath, validatedParams, tempBin, lBin, tempFiles, compileCommands);
+    } catch (error) {
+        await Promise.all(tempFiles.map(file => fs.promises.unlink(file).catch(() => { /* already gone */ })));
+        throw error;
+    }
+}
+
+async function finishFallbackCommand(
+    ctracePath: string,
+    inputFilePath: string,
+    validatedParams: string,
+    tempBin: string,
+    lBin: string,
+    tempFiles: string[],
+    compileCommands: boolean
+): Promise<BuiltCommand> {
+    const wBin = toWslPath(tempBin);
+    const wInput = toWslPath(inputFilePath);
     const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(wInput)}` : '';
 
     const libDir = getLibDirForBinary(ctracePath);
