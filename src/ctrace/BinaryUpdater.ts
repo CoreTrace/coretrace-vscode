@@ -48,6 +48,7 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
     const binDir = path.join(globalStorage, 'bin');
 
     await fs.promises.mkdir(binDir, { recursive: true });
+    await recoverInterruptedUpdate(binDir);
 
     const downloadedBinaryPath = await getExtractedBinaryPath(binDir);
     const lastCheck = context.globalState.get<number>('coretrace-last-update-check') || 0;
@@ -257,8 +258,6 @@ export async function downloadAndExtract(url: string, assetName: string, destDir
     const tmpDir = path.join(destDir, `tmp-${timestamp}`);
     await fs.promises.mkdir(tmpDir, { recursive: true });
 
-    const candidates = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
-
     try {
         if (assetName.toLowerCase().endsWith('.dmg')) {
             // hdiutil cannot read from a stream: save the image, then mount it.
@@ -281,38 +280,7 @@ export async function downloadAndExtract(url: string, assetName: string, destDir
 
         if (progressListener) { progressListener("Finishing..."); }
 
-        // Move the extracted layout (bin, lib, config, libexec) into destDir so ctrace can resolve its shared
-        // libraries via INSTALL_RPATH "$ORIGIN/../lib" (Linux) or "@loader_path/../lib" (macOS)
-        for (const folder of INSTALL_FOLDERS) {
-            const src = path.join(tmpDir, folder);
-            const dst = path.join(destDir, folder);
-            if (fs.existsSync(src)) {
-                await fs.promises.rm(dst, { recursive: true, force: true }).catch(() => {});
-                await fs.promises.rename(src, dst);
-            }
-        }
-
-        // Also check if any standalone binary was extracted at root of tmpDir
-        for (const name of candidates) {
-            const srcFile = path.join(tmpDir, name);
-            if (fs.existsSync(srcFile)) {
-                const dstBinDir = path.join(destDir, 'bin');
-                await fs.promises.mkdir(dstBinDir, { recursive: true });
-                const dstFile = path.join(dstBinDir, name);
-                await fs.promises.unlink(dstFile).catch(() => {});
-                await fs.promises.rename(srcFile, dstFile);
-            }
-        }
-
-        const finalBinPath = await getExtractedBinaryPath(destDir);
-        if (!finalBinPath) {
-            throw new Error("Could not find ctrace/coretrace binary inside the downloaded archive.");
-        }
-
-        // Make it executable if on linux/mac
-        if (process.platform !== 'win32') {
-            await fs.promises.chmod(finalBinPath, 0o755);
-        }
+        await installStagedRelease(tmpDir, destDir);
     } finally {
         clearTimeout(timeoutId);
         try {
@@ -320,6 +288,117 @@ export async function downloadAndExtract(url: string, assetName: string, destDir
         } catch (e) {
             // Ignore removal errors
         }
+    }
+}
+
+const BINARY_NAMES = ['ctrace', 'coretrace', 'ctrace.exe', 'coretrace.exe'];
+const PREVIOUS_PREFIX = 'previous-';
+
+type RenameFn = (from: string, to: string) => Promise<void>;
+
+/**
+ * Replaces the installed release in `destDir` with the one extracted in
+ * `stagedDir`, without ever leaving a broken installation:
+ * 1. the staged release is checked first: without a CLI, nothing is touched;
+ * 2. the installed folders are moved aside, then the staged ones moved in;
+ * 3. on any failure the new folders are removed and the old ones put back,
+ *    so the previous CLI keeps running with its own libraries.
+ * The moved-aside copy is deleted only once the new layout is complete, and
+ * recoverInterruptedUpdate() restores it if the process dies in between.
+ *
+ * @param rename Replaceable in tests, to fail partway through.
+ */
+export async function installStagedRelease(
+    stagedDir: string,
+    destDir: string,
+    rename: RenameFn = (from, to) => fs.promises.rename(from, to)
+): Promise<string> {
+    // A release can ship its CLI at the root instead of in bin/.
+    for (const name of BINARY_NAMES) {
+        const loose = path.join(stagedDir, name);
+        if (fs.existsSync(loose)) {
+            await fs.promises.mkdir(path.join(stagedDir, 'bin'), { recursive: true });
+            await fs.promises.rename(loose, path.join(stagedDir, 'bin', name));
+        }
+    }
+
+    const stagedBinary = BINARY_NAMES.map(name => path.join(stagedDir, 'bin', name)).find(isNonEmptyFile);
+    if (!stagedBinary) {
+        throw new Error('Could not find the ctrace binary inside the downloaded archive. The installed version was kept.');
+    }
+    if (process.platform !== 'win32') {
+        await fs.promises.chmod(stagedBinary, 0o755);
+    }
+
+    const backupDir = path.join(destDir, `${PREVIOUS_PREFIX}${Date.now()}`);
+    await fs.promises.mkdir(backupDir, { recursive: true });
+    const movedAside: string[] = [];
+    const installed: string[] = [];
+    try {
+        for (const folder of INSTALL_FOLDERS) {
+            if (fs.existsSync(path.join(destDir, folder))) {
+                await rename(path.join(destDir, folder), path.join(backupDir, folder));
+                movedAside.push(folder);
+            }
+        }
+        // Move the extracted layout (bin, lib, config, libexec) into destDir so ctrace can resolve its shared
+        // libraries via INSTALL_RPATH "$ORIGIN/../lib" (Linux) or "@loader_path/../lib" (macOS)
+        for (const folder of INSTALL_FOLDERS) {
+            if (fs.existsSync(path.join(stagedDir, folder))) {
+                await rename(path.join(stagedDir, folder), path.join(destDir, folder));
+                installed.push(folder);
+            }
+        }
+    } catch (error) {
+        for (const folder of installed) {
+            await fs.promises.rm(path.join(destDir, folder), { recursive: true, force: true }).catch(() => { /* best effort */ });
+        }
+        for (const folder of movedAside) {
+            await fs.promises.rm(path.join(destDir, folder), { recursive: true, force: true }).catch(() => { /* best effort */ });
+            await fs.promises.rename(path.join(backupDir, folder), path.join(destDir, folder));
+        }
+        await fs.promises.rm(backupDir, { recursive: true, force: true }).catch(() => { /* best effort */ });
+        throw new Error(`Could not install the new CoreTrace release (${(error as Error).message}). The installed version was kept.`);
+    }
+
+    await fs.promises.rm(backupDir, { recursive: true, force: true }).catch(() => { /* deleted at the next start */ });
+    return path.join(destDir, 'bin', path.basename(stagedBinary));
+}
+
+/**
+ * Finishes an update interrupted between moving the old release aside and
+ * deleting it: the old one is restored if the new one is not complete.
+ */
+export async function recoverInterruptedUpdate(destDir: string): Promise<void> {
+    let entries: string[];
+    try {
+        entries = (await fs.promises.readdir(destDir)).filter(name => name.startsWith(PREVIOUS_PREFIX)).sort();
+    } catch {
+        return;
+    }
+    if (entries.length === 0) { return; }
+    const current = BINARY_NAMES.some(name => isNonEmptyFile(path.join(destDir, 'bin', name)));
+    for (const entry of entries) {
+        const backupDir = path.join(destDir, entry);
+        const latest = entry === entries[entries.length - 1];
+        if (!current && latest) {
+            for (const folder of INSTALL_FOLDERS) {
+                if (fs.existsSync(path.join(backupDir, folder))) {
+                    await fs.promises.rm(path.join(destDir, folder), { recursive: true, force: true });
+                    await fs.promises.rename(path.join(backupDir, folder), path.join(destDir, folder));
+                }
+            }
+        }
+        await fs.promises.rm(backupDir, { recursive: true, force: true }).catch(() => { /* retried at the next start */ });
+    }
+}
+
+function isNonEmptyFile(file: string): boolean {
+    try {
+        const stat = fs.statSync(file);
+        return stat.isFile() && stat.size > 0;
+    } catch {
+        return false;
     }
 }
 
