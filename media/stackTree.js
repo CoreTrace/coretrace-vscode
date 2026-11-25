@@ -29,7 +29,9 @@
         const nodes = new Map();
         for (const node of report?.callGraph?.nodes ?? []) { nodes.set(node.id, { ...node }); }
         for (const fn of report?.functions ?? []) {
-            nodes.set(fn.name, { ...(nodes.get(fn.name) ?? {}), ...fn, id: fn.name, name: fn.name });
+            // A merged report gives same-named functions of different files their own id.
+            const id = fn.id ?? fn.name;
+            nodes.set(id, { ...(nodes.get(id) ?? {}), ...fn, id, name: fn.name });
         }
 
         const children = new Map();
@@ -76,7 +78,11 @@
 
         const standalone = [...nodes.keys()].filter(id => !linked.has(id)).sort(compare);
         const peak = Math.max(1, report?.peakStack || 0, ...[...nodes.values()].map(node => node.maxStack || 0));
-        const model = { nodes, children, parents, roots, standalone, peak, callCount, hotKeys: new Set(), hotPath: [] };
+        const nameCounts = new Map();
+        nodes.forEach(node => nameCounts.set(node.name, (nameCounts.get(node.name) ?? 0) + 1));
+        // Names shared by several functions: the UI adds their file to tell them apart.
+        const duplicateNames = new Set([...nameCounts].filter(([, count]) => count > 1).map(([name]) => name));
+        const model = { nodes, children, parents, roots, standalone, peak, callCount, duplicateNames, hotKeys: new Set(), hotPath: [] };
         model.hotPath = computeHotPath(model);
         // Prefixes of the path are hot too: they are the rows leading to it.
         model.hotPath.forEach((_, index) => model.hotKeys.add(keyOf(topLevelPrefix(model, model.hotPath[0]), model.hotPath.slice(0, index + 1))));
@@ -256,13 +262,30 @@
         return null;
     }
 
-    /** CodeLens passes unqualified names: `run` must find `Worker::run`. */
-    function resolveName(model, name) {
+    /**
+     * CodeLens passes unqualified names: `run` must find `Worker::run`. With
+     * `file`, the definition in that file wins over same-named ones elsewhere.
+     */
+    function resolveName(model, name, file) {
         if (!name) { return null; }
-        if (model.nodes.has(name)) { return name; }
         const suffix = `::${name}`;
-        const match = [...model.nodes.keys()].filter(id => id.endsWith(suffix)).sort(byPeakThenName(model.nodes));
-        return match[0] ?? null;
+        const all = [...model.nodes.values()];
+        const exact = all.filter(node => node.name === name);
+        const candidates = (exact.length > 0 ? exact : all.filter(node => node.name.endsWith(suffix)))
+            .sort((a, b) => byPeakThenName(model.nodes)(a.id, b.id));
+        if (file) {
+            const inFile = candidates.find(node => node.file === file);
+            if (inFile) { return inFile.id; }
+        }
+        return candidates[0]?.id ?? null;
+    }
+
+    /** Name to show for a function: with its file when another function shares the name. */
+    function displayName(model, id) {
+        const node = model.nodes.get(id);
+        if (!node) { return id; }
+        if (!model.duplicateNames.has(node.name) || !node.file) { return node.name; }
+        return `${node.name} · ${String(node.file).split(/[\\/]/).pop()}`;
     }
 
     /** Key of the row a nested row hangs from, or null at the top level. */
@@ -271,5 +294,5 @@
         return index < 0 ? null : key.slice(0, index);
     }
 
-    return { STANDALONE_KEY, createModel, defaultExpanded, allExpanded, flattenTree, rankedRows, pathTo, resolveName, parentKey };
+    return { STANDALONE_KEY, createModel, defaultExpanded, allExpanded, flattenTree, rankedRows, pathTo, resolveName, displayName, parentKey };
 }));

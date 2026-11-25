@@ -55,7 +55,7 @@ function collectFunctionLenses(
                 ));
 
                 // 2. Stack Footprint & Recursion Action
-                const stackInfo = StackManager.instance.getFunction(cleanName);
+                const stackInfo = StackManager.instance.getFunction(cleanName, documentUri.fsPath);
                 if (stackInfo) {
                     const recursionText = (stackInfo.isRecursive || stackInfo.hasInfiniteSelfRecursion)
                         ? '⚠️ Recursion: Cycle detected'
@@ -68,7 +68,7 @@ function collectFunctionLenses(
                         {
                             title: footprintTitle,
                             command: 'ctrace.focusStackFunction',
-                            arguments: [cleanName],
+                            arguments: [cleanName, documentUri.fsPath],
                             tooltip: `Peak stack usage: ${stackInfo.maxStack} bytes. Click to view in Stack Visualizer.`,
                         }
                     ));

@@ -762,11 +762,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.focusStackFunction', async (functionName?: string) => {
+        vscode.commands.registerCommand('ctrace.focusStackFunction', async (functionName?: string, file?: string) => {
             await vscode.commands.executeCommand('workbench.view.extension.ctrace-sidebar-view');
             sidebarProvider.postMessage({
                 type: 'focus-stack-tab',
                 functionName,
+                file: typeof file === 'string' ? file : undefined,
             });
         })
     );

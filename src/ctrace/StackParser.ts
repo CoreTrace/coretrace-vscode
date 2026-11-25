@@ -152,11 +152,13 @@ function buildCallGraph(
     functions: StackFunction[],
     sourceCode?: string
 ): { nodes: CallGraphNode[]; edges: CallGraphEdge[]; chains: CallChainStep[][] } {
+    // Callees are ids: names in a single-file report, see StackFunction.id.
+    const idOf = (f: StackFunction) => f.id ?? f.name;
     const fnMap = new Map<string, StackFunction>();
-    functions.forEach(f => fnMap.set(f.name, f));
+    functions.forEach(f => fnMap.set(idOf(f), f));
 
     const nodes: CallGraphNode[] = functions.map(f => ({
-        id: f.name,
+        id: idOf(f),
         name: f.name,
         file: f.file,
         line: f.line,
@@ -192,7 +194,7 @@ function buildCallGraph(
     // Prefer call relationships supplied by the analyzer when available.
     for (const fn of functions) {
         for (const callee of fn.callees ?? []) {
-            if (fnMap.has(callee)) { addEdge(fn.name, callee, fn.name === callee); }
+            if (fnMap.has(callee)) { addEdge(idOf(fn), callee, idOf(fn) === callee); }
         }
     }
 
@@ -236,7 +238,7 @@ function buildCallGraph(
             const isCycle = visited.has(fnName);
 
             currentPath.push({
-                name: fnName,
+                name: fn?.name ?? fnName,
                 localStack: local,
                 cumulativeStack: newCumulative,
                 isRecursive: fn?.isRecursive || isCycle,
@@ -263,7 +265,7 @@ function buildCallGraph(
             currentPath.pop();
         }
 
-        traverse(root.name, 0);
+        traverse(idOf(root), 0);
     }
 
     // If no chains were formed (e.g. disjoint functions), make a 1-step chain per function
@@ -306,7 +308,13 @@ export function mergeStackReports(reports: StackReport[]): StackReport | null {
     if (!reports || reports.length === 0) { return null; }
     if (reports.length === 1) { return reports[0]; }
 
-    const functionMap = new Map<string, StackFunction>();
+    // A function is identified by its name and the file defining it: two
+    // translation units can each have their own `static int helper()`.
+    // Functions without a known file (e.g. inline ones from a header) are
+    // merged by name, as the same definition seen from several files.
+    const identityOf = (fn: StackFunction) => fn.file ? `${fn.name}\u0000${fn.file}` : fn.name;
+    const merged = new Map<string, StackFunction>();
+    const identitiesByName = new Map<string, Set<string>>();
     let peakStack = 0;
     let recursiveCount = 0;
     let stackLimit = 8388608;
@@ -322,9 +330,12 @@ export function mergeStackReports(reports: StackReport[]): StackReport | null {
         recursiveCount += report.recursiveCount || 0;
 
         for (const fn of report.functions || []) {
-            const existing = functionMap.get(fn.name);
+            const identity = identityOf(fn);
+            if (!identitiesByName.has(fn.name)) { identitiesByName.set(fn.name, new Set()); }
+            identitiesByName.get(fn.name)!.add(identity);
+            const existing = merged.get(identity);
             if (!existing) {
-                functionMap.set(fn.name, { ...fn });
+                merged.set(identity, { ...fn, callees: [], callers: [] });
             } else {
                 existing.localStack = Math.max(existing.localStack, fn.localStack);
                 existing.maxStack = Math.max(existing.maxStack, fn.maxStack);
@@ -334,17 +345,37 @@ export function mergeStackReports(reports: StackReport[]): StackReport | null {
                 existing.exceedsLimit = existing.exceedsLimit || fn.exceedsLimit;
                 if (!existing.file && fn.file) { existing.file = fn.file; }
                 if (!existing.line && fn.line) { existing.line = fn.line; }
-                if (fn.callees?.length) {
-                    existing.callees = Array.from(new Set([...(existing.callees || []), ...fn.callees]));
-                }
-                if (fn.callers?.length) {
-                    existing.callers = Array.from(new Set([...(existing.callers || []), ...fn.callers]));
-                }
             }
         }
     }
 
-    const functions = Array.from(functionMap.values());
+    // Ids stay plain names unless a name has several definitions.
+    for (const fn of merged.values()) {
+        fn.id = identitiesByName.get(fn.name)!.size > 1 && fn.file ? `${fn.name}@${fn.file}` : fn.name;
+    }
+
+    // Calls are resolved within the report that saw them: a call to `helper`
+    // from a.c goes to a.c's helper. A name defined elsewhere only once is an
+    // external function; a name defined in several other files is ambiguous
+    // and left unlinked rather than guessed.
+    for (const report of reports) {
+        if (!report) { continue; }
+        const local = new Map((report.functions || []).map(fn => [fn.name, merged.get(identityOf(fn))!]));
+        for (const fn of report.functions || []) {
+            const caller = merged.get(identityOf(fn))!;
+            for (const calleeName of fn.callees ?? []) {
+                const callee = local.get(calleeName) ?? uniqueByName(calleeName);
+                if (callee && !caller.callees!.includes(callee.id!)) { caller.callees!.push(callee.id!); }
+            }
+        }
+    }
+
+    function uniqueByName(name: string): StackFunction | undefined {
+        const identities = identitiesByName.get(name);
+        return identities && identities.size === 1 ? merged.get([...identities][0]) : undefined;
+    }
+
+    const functions = Array.from(merged.values());
     if (functions.length === 0) { return null; }
 
     const { nodes, edges, chains } = buildCallGraph(functions);
