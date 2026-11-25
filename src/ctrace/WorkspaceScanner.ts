@@ -59,7 +59,17 @@ let _cacheFile: string | undefined;
  * Loads the analysis cache persisted by a previous session. Call once on
  * activation; without a storage directory the cache stays in memory only.
  */
-export async function initAnalysisCache(storageDir: string | undefined): Promise<void> {
+// The load and the writes in flight: clearCache() waits for them, so that
+// none of them can bring back what it deletes.
+let _loading: Promise<void> = Promise.resolve();
+let _persisting: Promise<void> = Promise.resolve();
+
+export function initAnalysisCache(storageDir: string | undefined): Promise<void> {
+    _loading = loadAnalysisCache(storageDir);
+    return _loading;
+}
+
+async function loadAnalysisCache(storageDir: string | undefined): Promise<void> {
     _cacheFile = storageDir ? path.join(storageDir, CACHE_FILE_NAME) : undefined;
     if (!_cacheFile) { return; }
     try {
@@ -77,7 +87,12 @@ export async function initAnalysisCache(storageDir: string | undefined): Promise
 }
 
 /** Writes the analysis cache to disk, dropping entries for files that no longer exist. */
-export async function persistAnalysisCache(): Promise<void> {
+export function persistAnalysisCache(): Promise<void> {
+    _persisting = _persisting.then(writeAnalysisCache);
+    return _persisting;
+}
+
+async function writeAnalysisCache(): Promise<void> {
     if (!_cacheFile) { return; }
     for (const fsPath of [..._analysisCache.keys()]) {
         if (!await fileExists(fsPath)) { _analysisCache.delete(fsPath); }
@@ -95,6 +110,8 @@ export function cacheFileAnalysis(file: WorkspaceFile, contextKey: string, analy
 }
 
 export async function clearCache(): Promise<void> {
+    await _loading;
+    await _persisting;
     _fileCache.clear();
     _analysisCache.clear();
     if (_cacheFile) {
