@@ -148,20 +148,20 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Command: ctrace.installDependencies ──────────────────────────────────
     context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.installDependencies', async (arg?: { distro?: string | null }) => {
+        vscode.commands.registerCommand('ctrace.installDependencies', async (arg?: { distro?: string | null }): Promise<boolean> => {
             if (process.platform === 'win32' && !isWslAvailable()) {
                 output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to install dependencies on Windows.');
                 promptWslInstallation();
-                return;
+                return false;
             }
 
-            await vscode.window.withProgress(
+            return vscode.window.withProgress(
                 {
                     location: vscode.ProgressLocation.Notification,
                     title: 'CoreTrace: Installing Analyzers & Dependencies',
                     cancellable: false,
                 },
-                async (progress) => {
+                async (progress): Promise<boolean> => {
                     // Install where the scan runs: the distribution a preflight
                     // asked for, else the one of the active file (WSL paths).
                     const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
@@ -169,7 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
                         ? arg.distro ?? null
                         : process.platform === 'win32' ? executionDistro(activeFile) : null;
                     if (distro) { output.appendLine(`[ctrace] Installing the analyzers in the WSL distribution ${distro}.`); }
-                    await installDependencies(output, progress, distro);
+                    return installDependencies(output, progress, distro);
                 }
             );
         })
@@ -280,9 +280,13 @@ export function activate(context: vscode.ExtensionContext) {
                         'Run Anyway'
                     );
                     if (action === 'Install Analyzers') {
-                        sidebarProvider.postMessage({ type: 'analysis-done' });
-                        vscode.commands.executeCommand('ctrace.installDependencies', { distro: toolsDistro });
-                        return;
+                        // Waits for the installer and its verification, then the
+                        // scan goes on with the tools just installed.
+                        const installed = await vscode.commands.executeCommand<boolean>('ctrace.installDependencies', { distro: toolsDistro });
+                        if (!installed) {
+                            sidebarProvider.postMessage({ type: 'analysis-done' });
+                            return;
+                        }
                     }
                 }
             }

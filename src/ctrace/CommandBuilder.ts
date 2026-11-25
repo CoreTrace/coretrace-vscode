@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { cppcheckEnvironment } from './ToolPaths';
 
 export interface BuiltCommand {
     /** Shell command string to execute via cp.exec. */
@@ -125,7 +126,8 @@ function buildNativeCommand(
     const extraArgs = compileCommands ? ` --compile-commands ${input}` : '';
     const toolsDir = path.posix.join(os.homedir().replace(/\\/g, '/'), '.coretrace', 'tools');
     const q = (p: string) => shellEscapeArg(`${toolsDir}/${p}`);
-    const envExports = `export CORETRACE_CPPCHECK_BIN='/opt/homebrew/bin/cppcheck' CORETRACE_IKOS_BIN=${q('ikos/src/ikos-build/bin/ikos')} CORETRACE_TSCANCODE_BIN=${q('tscancode/src/tscancode/trunk/tscancode')} CORETRACE_FLAWFINDER_SCRIPT=${q('flawfinder/src/flawfinder-build/flawfinder.py')} && `;
+    // Cppcheck is resolved like the dependency check does (ToolPaths.ts).
+    const envExports = `${cppcheckEnvironment()}export CORETRACE_IKOS_BIN=${q('ikos/src/ikos-build/bin/ikos')} CORETRACE_TSCANCODE_BIN=${q('tscancode/src/tscancode/trunk/tscancode')} CORETRACE_FLAWFINDER_SCRIPT=${q('flawfinder/src/flawfinder-build/flawfinder.py')} && `;
     const cdTools = `cd ${shellEscapeArg(toolsDir)} 2>/dev/null || true; `;
     const command = `${cdTools}${envExports}chmod +x ${bin} && ${bin} --input ${input}${extraArgs} ${params}`;
     return { command, tempFiles: [] };
@@ -405,7 +407,7 @@ async function finishFallbackCommand(
 
 function wslToolEnvironment(): string {
     const toolsDir = '$HOME/.coretrace/tools';
-    return `cd "${toolsDir}" 2>/dev/null || true; export CORETRACE_CPPCHECK_BIN=/opt/homebrew/bin/cppcheck CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    return `cd "${toolsDir}" 2>/dev/null || true; ${cppcheckEnvironment()}export CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
 }
 
 async function writeWslScript(script: string, distro: string | null, tempFiles: string[]): Promise<BuiltCommand> {
