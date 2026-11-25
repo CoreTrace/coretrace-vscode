@@ -109,6 +109,10 @@ export function activate(context: vscode.ExtensionContext) {
         sidebarProvider.postMessage({ type: 'analysis-result', data: snapshot.report, restored: true, savedAt: snapshot.savedAt, refresh: true });
     }
     context.subscriptions.push(ignoreList.onDidChange(() => { void republishFindings(); }));
+    context.subscriptions.push(ignoreList.onDidFailToRead(problem => {
+        output.appendLine(`[ctrace] ${problem}`);
+        vscode.window.showWarningMessage(`${problem} The findings ignored before stay ignored until it is fixed.`);
+    }));
 
     // Results of unchanged files from previous workspace scans.
     const analysisCacheReady = initAnalysisCache(context.storageUri?.fsPath);
@@ -715,7 +719,9 @@ export function activate(context: vscode.ExtensionContext) {
                 'Undo'
             );
             if (action === 'Undo') {
-                await ignoreList.remove([finding.fingerprint]);
+                await ignoreList.remove([finding.fingerprint]).catch((e: Error) => {
+                    vscode.window.showErrorMessage(`Could not restore the finding: ${e.message}`);
+                });
             }
         })
     );
@@ -752,7 +758,12 @@ export function activate(context: vscode.ExtensionContext) {
                 const selected = quickPick.selectedItems.map(item => item.fingerprint);
                 quickPick.hide();
                 if (selected.length > 0) {
-                    await ignoreList.remove(selected);
+                    try {
+                        await ignoreList.remove(selected);
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Could not restore the findings: ${e?.message ?? e}`);
+                        return;
+                    }
                     vscode.window.showInformationMessage(`${selected.length} finding${selected.length > 1 ? 's' : ''} restored.`);
                 }
             });

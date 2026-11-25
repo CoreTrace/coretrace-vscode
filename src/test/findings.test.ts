@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { updateDiagnostics, getFindingForDiagnostic, cweIds } from '../ctrace/DiagnosticsManager';
-import { FindingIgnoreList, computeFingerprint, IGNORE_FILE_NAME } from '../ctrace/FindingIgnoreList';
+import { FindingIgnoreList, IgnoreFileError, computeFingerprint, IGNORE_FILE_NAME } from '../ctrace/FindingIgnoreList';
 import {
     analysisContextKey,
     cacheFileAnalysis,
@@ -158,7 +158,74 @@ suite('Ignored findings Test Suite', () => {
 
             fs.writeFileSync(path.join(dir, IGNORE_FILE_NAME), '{ not json');
             assert.doesNotThrow(() => list.reload());
-            assert.deepStrictEqual(list.list(), []);
+            assert.ok(list.problem, 'an invalid file must be reported');
+        } finally {
+            list.dispose();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('a reason edited on disk is kept when another finding is ignored', async () => {
+        const dir = tempDir('ctrace-ignore-');
+        const file = path.join(dir, IGNORE_FILE_NAME);
+        const list = new FindingIgnoreList(dir);
+        try {
+            await list.add({ fingerprint: 'aaaa1111bbbb', ruleId: 'r1', reason: 'old reason' });
+            const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+            onDisk.ignored[0].reason = 'edited by hand';
+            onDisk.team = 'security';
+            fs.writeFileSync(file, JSON.stringify(onDisk));
+
+            await list.add({ fingerprint: 'cccc2222dddd', ruleId: 'r2' });
+
+            const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+            assert.strictEqual(after.ignored.find((e: any) => e.fingerprint === 'aaaa1111bbbb').reason, 'edited by hand');
+            assert.ok(after.ignored.some((e: any) => e.fingerprint === 'cccc2222dddd'));
+            assert.strictEqual(after.team, 'security', 'other top-level keys must be kept');
+        } finally {
+            list.dispose();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('an invalid ignore file is reported and never overwritten', async () => {
+        const dir = tempDir('ctrace-ignore-');
+        const file = path.join(dir, IGNORE_FILE_NAME);
+        const list = new FindingIgnoreList(dir);
+        const problems: string[] = [];
+        list.onDidFailToRead(problem => problems.push(problem));
+        try {
+            await list.add({ fingerprint: 'aaaa1111bbbb', ruleId: 'r1' });
+            const broken = '{ "version": 1, "ignored": [ { "fingerprint": "aaaa1111bbbb", } ';
+            fs.writeFileSync(file, broken);
+
+            await assert.rejects(list.add({ fingerprint: 'cccc2222dddd' }), IgnoreFileError);
+            await assert.rejects(list.remove(['aaaa1111bbbb']), IgnoreFileError);
+            assert.strictEqual(fs.readFileSync(file, 'utf8'), broken, 'the file must be left untouched');
+            assert.strictEqual(problems.length, 1, 'reported once, not on every read');
+            // The findings ignored before stay ignored while the file is broken.
+            assert.ok(list.has('aaaa1111bbbb'));
+
+            fs.writeFileSync(file, JSON.stringify({ version: 1, ignored: [] }));
+            assert.strictEqual(list.reload(), true);
+            assert.strictEqual(list.problem, undefined);
+            assert.ok(!list.has('aaaa1111bbbb'));
+            await list.add({ fingerprint: 'cccc2222dddd' });
+            assert.ok(list.has('cccc2222dddd'));
+        } finally {
+            list.dispose();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('a file that is valid JSON but not an ignore list is refused too', async () => {
+        const dir = tempDir('ctrace-ignore-');
+        const file = path.join(dir, IGNORE_FILE_NAME);
+        fs.writeFileSync(file, '["not", "an", "object"]');
+        const list = new FindingIgnoreList(dir);
+        try {
+            await assert.rejects(list.add({ fingerprint: 'cccc2222dddd' }), IgnoreFileError);
+            assert.strictEqual(fs.readFileSync(file, 'utf8'), '["not", "an", "object"]');
         } finally {
             list.dispose();
             fs.rmSync(dir, { recursive: true, force: true });
