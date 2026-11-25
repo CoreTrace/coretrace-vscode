@@ -27,6 +27,7 @@ import { FindingIgnoreList, relativeFindingPath, IGNORE_FILE_NAME } from './ctra
 import { IgnoreFindingCodeActionProvider } from './codelens/IgnoreFindingCodeActionProvider';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
+import { isRuntimeAnalyzerAvailable, requestsDynamicAnalysis } from './ctrace/RuntimeAnalyzer';
 import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
 import { FindingsStore } from './ctrace/FindingsStore';
 
@@ -320,6 +321,21 @@ export function activate(context: vscode.ExtensionContext) {
             const timeoutMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
                 ? timeoutSeconds * 1000
                 : DEFAULT_TIMEOUT_MS;
+
+            // Dynamic analysis needs the runtime analyzer, which macOS releases
+            // do not include. Without it, ctrace would only report a missing
+            // command: run the static tools and say how to stop asking.
+            if (requestsDynamicAnalysis(effectiveUiState)
+                && filesToAnalyze.some(file => sourceLanguage(file) === 'c')
+                && !(await isRuntimeAnalyzerAvailable(ctracePath))) {
+                effectiveUiState = { ...effectiveUiState, dynamicEnabled: false };
+                const message = 'Dynamic analysis was skipped: this ctrace has no coretrace-runtime-analyzer '
+                    + '(macOS releases do not include it). The static tools ran as usual.';
+                output.appendLine(`[ctrace] ${message}`);
+                void vscode.window.showWarningMessage(message, 'Turn Off Dynamic Analysis').then(action => {
+                    if (action) { sidebarProvider.postMessage({ type: 'set-dynamic-analysis', enabled: false }); }
+                });
+            }
 
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);

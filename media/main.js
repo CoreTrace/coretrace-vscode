@@ -691,6 +691,11 @@
                     fileLabel.textContent = lastFileName;
                 }
                 break;
+            case 'set-dynamic-analysis':
+                document.querySelectorAll('.dynamic-tool').forEach(tool => { tool.checked = msg.enabled === true; });
+                updateAnalysisModeStyles();
+                saveUiState();
+                break;
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
                 saveUiState();
