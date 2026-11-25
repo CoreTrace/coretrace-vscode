@@ -168,14 +168,35 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
-    context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
-            if (isRunning) {
-                vscode.window.showWarningMessage('An analysis is already in progress.');
-                sidebarProvider.postMessage({ type: 'analysis-done' });
-                return;
+    // The guard is taken before the first await and released on every exit:
+    // a second request during the dependency prompt, or a setup step that
+    // throws, can neither start a second run nor leave the guard stuck.
+    async function runGuarded(run: () => Promise<void>): Promise<void> {
+        if (isRunning) {
+            // The sidebar shows the active run: leave its status alone.
+            vscode.window.showWarningMessage('An analysis is already in progress.');
+            return;
+        }
+        isRunning = true;
+        try {
+            await run();
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            output.appendLine(`[ctrace] Analysis could not start: ${message}`);
+            vscode.window.showErrorMessage(`Ctrace analysis could not start: ${message}`);
+            sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis not started', detail: message });
+        } finally {
+            isRunning = false;
+            sidebarProvider.postMessage({ type: 'analysis-done' });
+            if (republishPending) {
+                republishPending = false;
+                void republishFindings();
             }
+        }
+    }
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.runAnalysis', (arg?: any) => runGuarded(async () => {
             if (process.platform === 'win32' && !isWslAvailable()) {
                 output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
                 promptWslInstallation();
@@ -282,7 +303,6 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            isRunning = true;
             sidebarProvider.postMessage({ type: 'analysis-start' });
 
             const extensionPath = context.extensionUri.fsPath;
@@ -348,7 +368,6 @@ export function activate(context: vscode.ExtensionContext) {
                 const message = e instanceof Error ? e.message : String(e);
                 output.appendLine(`[ctrace] ${message}`);
                 vscode.window.showErrorMessage(message);
-                isRunning = false;
                 sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis not started', detail: message });
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
@@ -656,16 +675,11 @@ export function activate(context: vscode.ExtensionContext) {
                         if (incremental) {
                             void persistAnalysisCache();
                         }
-                        isRunning = false;
                         sidebarProvider.postMessage({ type: 'analysis-done' });
-                        if (republishPending) {
-                            republishPending = false;
-                            void republishFindings();
-                        }
                     }
                 }
             );
-        })
+        }))
     );
 
     context.subscriptions.push(
