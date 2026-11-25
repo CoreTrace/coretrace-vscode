@@ -83,6 +83,8 @@
     const smtSecondaryGroup = document.getElementById('smt-secondary-group');
     const smtModeSelect = document.getElementById('smt-mode');
     const persistedState = vscode.getState() || {};
+    // Static tools of the versions that did not save knownStaticTools.
+    const LEGACY_STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'];
     // While a search forces sections open: the ones to reopen afterwards.
     let settingsSearchRestore = null;
     let analysisProfile = 'full';
@@ -211,7 +213,7 @@
         if (fileLabel) {
             fileLabel.textContent = workspace
                 ? 'All C/C++ files in workspace'
-                : (lastFileName || 'Open a C/C++ file to analyse');
+                : (lastFileName || 'Open a C/C++ or Python file to analyse');
         }
         [onlyDirGroup, excludeDirGroup].forEach(group => {
             if (!group) { return; }
@@ -363,7 +365,8 @@
 
         setScanMode(persistedState.scanWorkspace === true);
         setAnalysisProfile(saved.analysisProfile || 'full');
-        restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false, saved.dynamicTools);
+        restoreToolSelection('.static-tool', saved.staticTools, saved.staticEnabled !== false, saved.dynamicTools,
+            persistedState.knownStaticTools || LEGACY_STATIC_TOOLS);
         restoreToolSelection('.dynamic-tool', saved.dynamicTools, saved.dynamicEnabled !== false);
         const isWs = persistedState.scanWorkspace === true;
         setValue('only-function', saved.onlyFunction || '');
@@ -401,6 +404,7 @@
         vscode.setState({
             uiState: readCtraceUiState(),
             scanWorkspace,
+            knownStaticTools: [...document.querySelectorAll('.static-tool')].map(tool => tool.value),
             openSections: openSectionKeys(),
         });
         refreshSettingsIndicators();
@@ -605,10 +609,14 @@
         return Array.from(document.querySelectorAll(`${selector}:checked`)).map(element => element.value);
     }
 
-    function restoreToolSelection(selector, savedTools, enabled, fallbackSavedTools) {
+    function restoreToolSelection(selector, savedTools, enabled, fallbackSavedTools, knownTools) {
         const selected = Array.isArray(savedTools) ? savedTools : null;
         document.querySelectorAll(selector).forEach(tool => {
-            if (selected) {
+            if (selected && Array.isArray(knownTools) && !knownTools.includes(tool.value)) {
+                // A tool added since this state was saved: the user never
+                // turned it off, so it starts on like in a fresh install.
+                tool.checked = enabled;
+            } else if (selected) {
                 const inSaved = selected.includes(tool.value);
                 const inFallback = Array.isArray(fallbackSavedTools) && fallbackSavedTools.includes(tool.value);
                 tool.checked = inSaved || inFallback;

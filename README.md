@@ -1,6 +1,6 @@
 # CoreTrace VS Code Extension
 
-CoreTrace VS Code brings the power of the `ctrace` security and quality analysis framework directly into Visual Studio Code. It provides seamless static and dynamic analysis for C and C++ projects, surfacing vulnerabilities, code defects, and stack diagnostics directly in your editor.
+CoreTrace VS Code brings the power of the `ctrace` security and quality analysis framework directly into Visual Studio Code. It provides seamless static and dynamic analysis for C, C++ and Python projects, surfacing vulnerabilities, code defects, and stack diagnostics directly in your editor.
 
 ---
 
@@ -50,7 +50,7 @@ Precise C/C++ static analysis requires knowledge of compiler flags, include dire
 > ```
 
 ### 6. Incremental Workspace Scans
-Save time on repetitive scans. CoreTrace computes file content hashes and only re-analyzes C/C++ files that have changed since their last analysis; the results of the other files are reused, even after restarting VS Code.
+Save time on repetitive scans. CoreTrace computes file content hashes and only re-analyzes C/C++ and Python files that have changed since their last analysis; the results of the other files are reused, even after restarting VS Code. Python files are re-analyzed when a dependency manifest changes (`requirements*.txt`, `pyproject.toml`, `setup.py`, lock files…).
 - The cache is invalidated for every file when a header, `compile_commands.json`, the `ctrace` binary or the analysis options change, since any of these can change the result of an unmodified source file.
 - Run **Clear Analysis Cache** to force a full scan, or set `ctrace.workspace.incremental` to `false` to disable the cache.
 
@@ -80,6 +80,13 @@ The gear icon opens the analysis settings, grouped by purpose:
 - Options that do not apply to the current scan mode say so on a single line.
 - **Reset to defaults** restores everything in two clicks. Settings stored in `settings.json` (timeout, incremental scans, analysis models…) are one click away.
 
+
+### 11. Python Analysis
+With `ctrace` 0.85 or newer, Python files (`.py`) are analyzed by `coretrace-python-analyzer`, which ships with `ctrace`: there is nothing to install.
+- It reports, among others, dangerous `eval`, hardcoded credentials, weak cryptography, insecure TLS or temporary files, and taint flows from web frameworks (Flask, Django, FastAPI…) into command, SQL or NoSQL injection, path traversal, SSRF and XSS.
+- Run it on the active `.py` file, or with **Scan Workspace**, which then covers C/C++ and Python files and skips virtual environments and caches (`.venv`, `venv`, `site-packages`, `__pycache__`…).
+- Turn it on or off with `coretrace-python-analyzer` in the **Static** tools menu. C/C++ files never receive it, so older `ctrace` binaries keep working for them.
+- Findings get the same diagnostics, CWE links and ignore actions as C/C++ findings. The CodeLens, the Stack Tree and dynamic analysis stay C/C++ only.
 ---
 
 ## ⚙️ Requirements & Prerequisites
@@ -111,8 +118,8 @@ Access these commands from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | Title | Description |
 |---|---|---|
-| `ctrace.runAnalysis` | **Run Analysis** | Runs analysis on the currently active C/C++ file. |
-| `ctrace.runWorkspaceAnalysis` | **Run Workspace Analysis** | Analyzes all modified C/C++ files in the workspace. |
+| `ctrace.runAnalysis` | **Run Analysis** | Runs analysis on the currently active C/C++ or Python file. |
+| `ctrace.runWorkspaceAnalysis` | **Run Workspace Analysis** | Analyzes all modified C/C++ and Python files in the workspace. |
 | `ctrace.installDependencies` | **CoreTrace: Install Analyzers & Dependencies** | Installs or repairs external static analyzers (`cppcheck`, `flawfinder`, `ikos`, `tscancode`). |
 | `ctrace.clearAnalysisCache` | **Clear Analysis Cache** | Clears cached analysis results to force a full re-scan. |
 | `ctrace.focusStackFunction` | **CoreTrace: View Function in Stack Visualizer** | Opens the Stack Visualizer on a function. |
@@ -174,7 +181,7 @@ npm run compile
 npm test
 ```
 
-The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`). Press `F5` in VS Code to start an Extension Development Host with the extension loaded.
+The test suite runs inside a downloaded VS Code instance (`@vscode/test-cli`), in two configurations: `unit` without a folder, and `workspace` with `src/test-workspace/fixture` open, for commands like Run Analysis that need one. Press `F5` in VS Code to start an Extension Development Host with the extension loaded.
 
 `src/test/params.integration.test.ts` runs every analysis parameter through a real `ctrace`. It uses the binary named by `CTRACE_BIN`, or a `ctrace` file at the repository root, and is skipped when there is none, as on CI.
 

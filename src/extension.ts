@@ -8,7 +8,7 @@ import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
-import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, shellQuoteArgs, CtraceUIState } from './ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, prepareScanDirectory, shellQuoteArgs, CtraceUIState, sourceLanguage, analysesLanguage, workspaceSourceExtensions, PYTHON_EXCLUDED_DIRS, SourceLanguage } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
@@ -21,6 +21,7 @@ import {
     analysisContextKey,
     cacheFileAnalysis,
     WorkspaceFile,
+    PYTHON_MANIFEST_GLOB,
 } from './ctrace/WorkspaceScanner';
 import { FindingIgnoreList, relativeFindingPath, IGNORE_FILE_NAME } from './ctrace/FindingIgnoreList';
 import { IgnoreFindingCodeActionProvider } from './codelens/IgnoreFindingCodeActionProvider';
@@ -69,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
     const ignoreList = new FindingIgnoreList(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
     context.subscriptions.push(ignoreList);
     const isIgnored = (fingerprint: string) => ignoreList.has(fingerprint);
-    for (const language of ['c', 'cpp', 'objective-c', 'objective-cpp']) {
+    for (const language of ['c', 'cpp', 'objective-c', 'objective-cpp', 'python']) {
         context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
             { language },
             new IgnoreFindingCodeActionProvider(),
@@ -201,8 +202,63 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const requestedStaticTools: string[] = uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'];
-            if (uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
+            // ── Determine files to analyse ───────────────────────────────────
+            let filesToAnalyze: string[];
+            const pythonEnabled = analysesLanguage(uiState, 'python');
+
+            if (scanWorkspace) {
+                const userExclude = uiState.excludeDir
+                    ? uiState.excludeDir.split(',').map((s: string) => `**/${s.trim()}/**`).filter(Boolean).join(',')
+                    : '';
+                const pythonExclude = pythonEnabled ? PYTHON_EXCLUDED_DIRS.map(dir => `,**/${dir}/**`).join('') : '';
+                const excludeGlob = `{**/node_modules/**,**/.git/**,**/build/**,**/out/**,**/.cache/**,**/.vscode/**${pythonExclude}${userExclude ? ',' + userExclude : ''}}`;
+
+                const extensions = workspaceSourceExtensions(pythonEnabled ? ['c', 'python'] : ['c']);
+                let includeGlob = `**/*.${extensions}`;
+                if (uiState.onlyDir) {
+                    const dirs = uiState.onlyDir.split(',').map((s: string) => s.trim()).filter(Boolean);
+                    if (dirs.length === 1) {
+                        includeGlob = `${dirs[0]}/**/*.${extensions}`;
+                    } else if (dirs.length > 1) {
+                        includeGlob = `{${dirs.map((d: string) => `${d}/**/*.${extensions}`).join(',')}}`;
+                    }
+                }
+
+                const uris = await vscode.workspace.findFiles(includeGlob, excludeGlob);
+                if (uris.length === 0) {
+                    vscode.window.showWarningMessage(`No ${pythonEnabled ? 'C/C++ or Python' : 'C/C++'} files found in the current workspace matching the filters.`);
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
+                filesToAnalyze = uris.map(u => u.fsPath);
+            } else {
+                const targetUri = arg?.filePath
+                    ? vscode.Uri.file(arg.filePath)
+                    : vscode.window.activeTextEditor?.document.uri;
+                if (!targetUri) {
+                    vscode.window.showErrorMessage('No active file to analyse.');
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
+                const language = sourceLanguage(targetUri.fsPath);
+                if (targetUri.scheme !== 'file' || !language) {
+                    vscode.window.showWarningMessage('Please open or focus a C/C++ (.c, .cpp, .cc, .cxx) or Python (.py) source file to analyse.');
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
+                if (!analysesLanguage(uiState, language)) {
+                    vscode.window.showWarningMessage('The Python analyzer is turned off: select coretrace-python-analyzer in the Static tools menu to analyse Python files.');
+                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    return;
+                }
+                filesToAnalyze = [targetUri.fsPath];
+            }
+
+            // Only the C and C++ tools have to be installed; the Python analyzer ships with ctrace.
+            const hasCFiles = filesToAnalyze.some(file => sourceLanguage(file) === 'c');
+            const requestedStaticTools: string[] = (uiState.staticTools ?? ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'])
+                .filter(tool => tool !== 'coretrace-python-analyzer');
+            if (hasCFiles && uiState.staticEnabled !== false && requestedStaticTools.length > 0) {
                 const depStatus = await checkDependencies();
                 const missingRequested = requestedStaticTools.filter((t) => depStatus.missing.includes(t));
                 if (missingRequested.length > 0) {
@@ -217,51 +273,6 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
                 }
-            }
-
-            // ── Determine files to analyse ───────────────────────────────────
-            let filesToAnalyze: string[];
-
-            if (scanWorkspace) {
-                const userExclude = uiState.excludeDir
-                    ? uiState.excludeDir.split(',').map((s: string) => `**/${s.trim()}/**`).filter(Boolean).join(',')
-                    : '';
-                const excludeGlob = `{**/node_modules/**,**/.git/**,**/build/**,**/out/**,**/.cache/**,**/.vscode/**${userExclude ? ',' + userExclude : ''}}`;
-
-                let includeGlob = '**/*.{c,cpp,cc,cxx}';
-                if (uiState.onlyDir) {
-                    const dirs = uiState.onlyDir.split(',').map((s: string) => s.trim()).filter(Boolean);
-                    if (dirs.length === 1) {
-                        includeGlob = `${dirs[0]}/**/*.{c,cpp,cc,cxx}`;
-                    } else if (dirs.length > 1) {
-                        includeGlob = `{${dirs.map((d: string) => `${d}/**/*.{c,cpp,cc,cxx}`).join(',')}}`;
-                    }
-                }
-
-                const uris = await vscode.workspace.findFiles(includeGlob, excludeGlob);
-                if (uris.length === 0) {
-                    vscode.window.showWarningMessage('No C/C++ files found in the current workspace matching the filters.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
-                    return;
-                }
-                filesToAnalyze = uris.map(u => u.fsPath);
-            } else {
-                const targetUri = arg?.filePath
-                    ? vscode.Uri.file(arg.filePath)
-                    : vscode.window.activeTextEditor?.document.uri;
-                if (!targetUri) {
-                    vscode.window.showErrorMessage('No active file to analyse.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
-                    return;
-                }
-                const ext = path.extname(targetUri.fsPath).toLowerCase();
-                const C_EXTENSIONS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh']);
-                if (targetUri.scheme !== 'file' || !C_EXTENSIONS.has(ext)) {
-                    vscode.window.showWarningMessage('Please open or focus a C/C++ source file (.c, .cpp, .cc, .cxx) to analyse.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
-                    return;
-                }
-                filesToAnalyze = [targetUri.fsPath];
             }
 
             // ── Locate binary ────────────────────────────────────────────────
@@ -313,7 +324,8 @@ export function activate(context: vscode.ExtensionContext) {
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);
 
-            if (scanMode === 'file' && autoEntryPoints && !uiState.entryPoints?.length) {
+            // Entry points are C and C++ function names.
+            if (scanMode === 'file' && autoEntryPoints && !uiState.entryPoints?.length && sourceLanguage(filesToAnalyze[0]) === 'c') {
                 const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filesToAnalyze[0]));
                 const symbols = await getFunctionSymbols(document);
                 effectiveUiState = { ...effectiveUiState, scanMode, entryPoints: symbols };
@@ -321,6 +333,26 @@ export function activate(context: vscode.ExtensionContext) {
 
             output.show(true);
             output.clear();
+
+            // ── Scan files ───────────────────────────────────────────────────
+            // Written before anything runs: without the config, ctrace would
+            // run without the requested macros, include paths or filters.
+            let scanDir: string;
+            let configPath: string;
+            let hasConfig: boolean;
+            try {
+                scanDir = prepareScanDirectory(context.globalStorageUri.fsPath);
+                configPath = createConfigPath(scanDir);
+                hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
+            } catch (e) {
+                const message = e instanceof Error ? e.message : String(e);
+                output.appendLine(`[ctrace] ${message}`);
+                vscode.window.showErrorMessage(message);
+                isRunning = false;
+                sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis not started', detail: message });
+                sidebarProvider.postMessage({ type: 'analysis-done' });
+                return;
+            }
 
             // ── Run with progress ────────────────────────────────────────────
             await vscode.window.withProgress(
@@ -343,9 +375,6 @@ export function activate(context: vscode.ExtensionContext) {
                         StackManager.instance.clear();
                     }
 
-                    const configPath = createConfigPath(extensionPath);
-                    const hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
-
                     const publishStack = (stackReport: any) => {
                         allStackReports.push(stackReport);
                         const unifiedStack = mergeStackReports(allStackReports);
@@ -362,7 +391,9 @@ export function activate(context: vscode.ExtensionContext) {
                     // Reuse the results of files whose content, headers and
                     // ctrace invocation are unchanged since they were analysed.
                     const incremental = scanWorkspace && ctraceConfig.get<boolean>('workspace.incremental', true);
-                    let contextKey = '';
+                    // One key per language: a header edit must not re-analyse Python
+                    // files, nor a requirements.txt edit C files.
+                    const contextKeys: Partial<Record<SourceLanguage, string>> = {};
                     let queue: WorkspaceFile[] = filesToAnalyze.map(fsPath => ({ fsPath, hash: '' }));
                     let cachedCount = 0;
                     if (incremental) {
@@ -374,14 +405,24 @@ export function activate(context: vscode.ExtensionContext) {
                         };
                         let configContent = '';
                         try { configContent = hasConfig ? fs.readFileSync(configPath, 'utf8') : ''; } catch { /* ignore */ }
-                        contextKey = await analysisContextKey(
-                            [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs],
-                            [ctracePath, effectiveUiState.compileCommandsPath, effectiveUiState.configFile]
-                        );
-                        const partition = await partitionFiles(filesToAnalyze, contextKey);
-                        queue = partition.changed;
-                        cachedCount = partition.cached.size;
-                        for (const [fp, cached] of partition.cached) {
+                        const languages = [...new Set(filesToAnalyze.map(file => sourceLanguage(file) ?? 'c'))];
+                        const cachedByFile = new Map<string, any>();
+                        queue = [];
+                        for (const language of languages) {
+                            const key = language === 'python'
+                                ? await analysisContextKey(
+                                    [language, buildCtraceArgs(placeholderState, ctraceConfig, language), timeoutMs],
+                                    [ctracePath], PYTHON_MANIFEST_GLOB)
+                                : await analysisContextKey(
+                                    [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs],
+                                    [ctracePath, effectiveUiState.compileCommandsPath, effectiveUiState.configFile]);
+                            contextKeys[language] = key;
+                            const partition = await partitionFiles(filesToAnalyze.filter(file => (sourceLanguage(file) ?? 'c') === language), key);
+                            queue.push(...partition.changed);
+                            partition.cached.forEach((cached, fp) => cachedByFile.set(fp, cached));
+                        }
+                        cachedCount = cachedByFile.size;
+                        for (const [fp, cached] of cachedByFile) {
                             allSarif.push(cached.sarif);
                             lastSarifByFile.set(fp, cached.sarif);
                             updateDiagnostics(cached.sarif, diagnosticCollection, fp, false, { isIgnored });
@@ -407,6 +448,7 @@ export function activate(context: vscode.ExtensionContext) {
                             }
 
                             const fp = queue[i].fsPath;
+                            const language = sourceLanguage(fp) ?? 'c';
                             const fileName = path.basename(fp);
                             const cachedSuffix = cachedCount > 0 ? ` (${cachedCount} unchanged)` : '';
 
@@ -424,12 +466,12 @@ export function activate(context: vscode.ExtensionContext) {
                             });
 
                             // Build & run command for this file.
-                            const reportPath = createReportPath(extensionPath);
+                            const reportPath = createReportPath(scanDir);
                             const args = buildCtraceArgs({
                                 ...effectiveUiState,
                                 reportFile: reportPath,
                                 configFile: hasConfig ? configPath : effectiveUiState.configFile,
-                            }, ctraceConfig);
+                            }, ctraceConfig, language);
                             const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args));
                             tryDelete(reportPath);
 
@@ -488,7 +530,8 @@ export function activate(context: vscode.ExtensionContext) {
                                 // If ctrace was run with --sarif-format, ctrace >= 0.80 suppresses the stack analyzer
                                 // rendering from stdout/report-file into SARIF-only results (no function/stack metrics).
                                 // In that case, run a fast dedicated stack pass (~20ms) to retrieve the call-graph & stack metrics.
-                                if (!stackReport || stackReport.functions.length === 0) {
+                                // The stack analyzer only reads C and C++.
+                                if (language === 'c' && (!stackReport || stackReport.functions.length === 0)) {
                                     const isStackRequested = (
                                         (effectiveUiState.staticEnabled !== false &&
                                             (effectiveUiState.staticTools === undefined || effectiveUiState.staticTools.includes('ctrace_stack_analyzer'))) ||
@@ -528,7 +571,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 lastSarifByFile.set(fp, sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace, { isIgnored });
                                 if (incremental && !killed && queue[i].hash) {
-                                    cacheFileAnalysis(queue[i], contextKey, { sarif, stack: fileStack });
+                                    cacheFileAnalysis(queue[i], contextKeys[language] ?? '', { sarif, stack: fileStack });
                                 }
                             } else if (!scanWorkspace) {
                                 // Single-file mode: report parse failure immediately

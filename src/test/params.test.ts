@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded, CtraceUIState } from '../ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded, prepareScanDirectory, ScanSetupError, setScanDirectoryForTesting, CtraceUIState } from '../ctraceRunner';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const REPORT = '/tmp/report.json';
@@ -262,5 +262,52 @@ suite('Analysis parameters: wiring between the sidebar, the runner and package.j
         for (const key of readKeys) {
             assert.ok(declared.includes(key), `ctrace.${key} is read but not declared in package.json`);
         }
+    });
+});
+
+suite('Analysis parameters: scan files', () => {
+    let work = '';
+    setup(() => { work = fs.mkdtempSync(path.join(os.tmpdir(), 'ctrace-scan-')); });
+    teardown(() => {
+        setScanDirectoryForTesting(undefined);
+        fs.rmSync(work, { recursive: true, force: true });
+    });
+
+    /** A path below a regular file: creating it always fails, even as root. */
+    function unwritable(): string {
+        const blocker = path.join(work, 'not-a-folder');
+        fs.writeFileSync(blocker, '');
+        return path.join(blocker, 'sub');
+    }
+
+    test('a config that cannot be written stops the run and names the lost settings', () => {
+        assert.throws(
+            () => generateConfigFileIfNeeded(path.join(unwritable(), 'c.json'), { macros: 'FEATURE=1', extraIncludes: 'include' }, '/work', settings()),
+            (error: Error) => error instanceof ScanSetupError
+                && /not started/.test(error.message)
+                && /macros/.test(error.message)
+                && /include directories/.test(error.message)
+        );
+    });
+
+    test('no config needed is not an error, even where nothing can be written', () => {
+        assert.strictEqual(generateConfigFileIfNeeded(path.join(unwritable(), 'c.json'), {}, '/work', settings()), false);
+    });
+
+    test('scan files go to the extension storage', () => {
+        const storage = path.join(work, 'storage');
+        assert.strictEqual(prepareScanDirectory(storage), path.join(storage, 'scan'));
+        assert.ok(fs.statSync(path.join(storage, 'scan')).isDirectory());
+    });
+
+    test('a private temporary folder is used when the storage is not writable', () => {
+        const dir = prepareScanDirectory(unwritable());
+        assert.ok(dir.startsWith(path.join(os.tmpdir(), 'coretrace-scan-')), dir);
+        fs.accessSync(dir, fs.constants.W_OK);
+    });
+
+    test('no writable folder at all is an error', () => {
+        setScanDirectoryForTesting(unwritable());
+        assert.throws(() => prepareScanDirectory(path.join(work, 'storage')), ScanSetupError);
     });
 });

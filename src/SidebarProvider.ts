@@ -228,7 +228,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 					<!-- Current file -->
 					<div class="file-pill" id="file-pill">
 						<i data-lucide="file-code-2"></i>
-						<span id="file-label">Open a C/C++ file to analyse</span>
+						<span id="file-label">Open a C/C++ or Python file to analyse</span>
 					</div>
 
           <!-- Scan mode -->
@@ -261,6 +261,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                   <label><input type="checkbox" class="static-tool" value="ikos" checked><span>ikos</span></label>
                   <label><input type="checkbox" class="static-tool" value="tscancode" checked><span>tscancode</span></label>
                   <label><input type="checkbox" class="static-tool" value="ctrace_stack_analyzer" checked><span>ctrace_stack_analyzer</span></label>
+                  <label title="Python files (.py), ctrace 0.85 or newer"><input type="checkbox" class="static-tool" value="coretrace-python-analyzer" checked><span>coretrace-python-analyzer</span></label>
                 </div>
               </div>
               <div class="analysis-mode-menu">
