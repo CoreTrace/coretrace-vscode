@@ -1,4 +1,10 @@
 export interface StackFunction {
+    /**
+     * Unique key in a merged workspace report: the name, or `name@file` when
+     * several files define a function with that name (e.g. two static helpers).
+     * Absent in a single-file report, where the name is unique.
+     */
+    id?: string;
     name: string;
     file?: string;
     line?: number;

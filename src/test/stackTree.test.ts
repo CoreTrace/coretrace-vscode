@@ -137,6 +137,24 @@ suite('Stack call tree Test Suite', () => {
         assert.strictEqual(lib.resolveName(model, 'missing'), null);
     });
 
+    test('same-named functions of different files are told apart', () => {
+        const model = lib.createModel({
+            peakStack: 64,
+            functions: [
+                { id: 'helper@/w/a.c', name: 'helper', file: '/w/a.c', line: 1, localStack: 16, maxStack: 16, isRecursive: false },
+                { id: 'helper@/w/b.c', name: 'helper', file: '/w/b.c', line: 1, localStack: 32, maxStack: 32, isRecursive: false },
+                { id: 'main', name: 'main', file: '/w/a.c', localStack: 8, maxStack: 24, isRecursive: false },
+            ],
+            callGraph: { nodes: [], chains: [], edges: [{ from: 'main', to: 'helper@/w/a.c' }] },
+        });
+        assert.strictEqual(model.nodes.size, 3);
+        assert.strictEqual(lib.resolveName(model, 'helper', '/w/a.c'), 'helper@/w/a.c');
+        assert.strictEqual(lib.resolveName(model, 'helper', '/w/b.c'), 'helper@/w/b.c');
+        assert.strictEqual(lib.displayName(model, 'helper@/w/b.c'), 'helper · b.c');
+        assert.strictEqual(lib.displayName(model, 'main'), 'main');
+        assert.deepStrictEqual(model.children.get('main'), ['helper@/w/a.c']);
+    });
+
     test('an empty report does not throw', () => {
         const model = lib.createModel({ functions: [], peakStack: 0 });
         assert.deepStrictEqual(lib.flattenTree(model, {}).rows, []);

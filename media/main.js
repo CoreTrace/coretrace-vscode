@@ -701,7 +701,7 @@
             case 'focus-stack-tab':
                 switchResultTab('stack');
                 if (msg.functionName && stackModel) {
-                    const id = stackTreeLib.resolveName(stackModel, msg.functionName);
+                    const id = stackTreeLib.resolveName(stackModel, msg.functionName, msg.file);
                     if (id) { revealStackFunction(id); }
                 }
                 break;
@@ -1008,7 +1008,7 @@
 
         const name = document.createElement('span');
         name.className = 'stack-row-name';
-        appendHighlighted(name, node.name, query);
+        appendHighlighted(name, stackTreeLib.displayName(stackModel, row.id), query);
 
         const badges = document.createElement('span');
         badges.className = 'stack-row-badges';
@@ -1218,8 +1218,8 @@
             const link = document.createElement('button');
             link.type = 'button';
             link.className = 'stack-link';
-            link.textContent = id;
-            link.title = `Show ${id} in the tree`;
+            link.textContent = stackTreeLib.displayName(stackModel, id);
+            link.title = `Show ${link.textContent} in the tree`;
             link.addEventListener('click', () => revealStackFunction(id));
             row.appendChild(link);
         });

@@ -2,6 +2,42 @@ import * as assert from 'assert';
 import { parseStackReport, mergeStackReports } from '../ctrace/StackParser';
 
 suite('StackParser Test Suite', () => {
+    test('same-named functions of two files stay distinct after merging', () => {
+        const report = (fns: [string, number][]) => fns
+            .map(([name, peak]) => `Function: ${name} \n\tlocal stack: ${peak} bytes\n\tmax stack (including callees): ${peak} bytes\n`)
+            .join('\n');
+        // Each file has its own static helper, called by a function of that file.
+        const aSource = 'static int helper(int n) { return n; }\nint main(void) { return helper(1); }\n';
+        const bSource = 'static int helper(int n) { return n * 2; }\nint run(void) { return helper(2); }\n';
+        const a = parseStackReport(report([['helper', 16], ['main', 48]]), aSource, '/w/a.c')!;
+        const b = parseStackReport(report([['helper', 32], ['run', 64]]), bSource, '/w/b.c')!;
+
+        const merged = mergeStackReports([a, b])!;
+        const helpers = merged.functions.filter(fn => fn.name === 'helper');
+        assert.strictEqual(helpers.length, 2, 'one row per definition');
+        const inA = helpers.find(fn => fn.file === '/w/a.c')!;
+        const inB = helpers.find(fn => fn.file === '/w/b.c')!;
+        assert.strictEqual(inA.maxStack, 16);
+        assert.strictEqual(inB.maxStack, 32);
+        assert.strictEqual(inA.line, 1);
+        assert.strictEqual(inB.line, 1);
+        assert.notStrictEqual(inA.id, inB.id);
+
+        // Each call reaches the helper of its own file.
+        const edges = merged.callGraph!.edges.map(edge => `${edge.from} -> ${edge.to}`).sort();
+        assert.deepStrictEqual(edges, [`main -> ${inA.id}`, `run -> ${inB.id}`].sort());
+        assert.deepStrictEqual(inA.callers, ['main']);
+        assert.deepStrictEqual(inB.callers, ['run']);
+        // Names defined once keep their name as id.
+        assert.ok(merged.functions.some(fn => fn.id === 'main'));
+    });
+
+    test('a function seen by several files without a known file is merged by name', () => {
+        const report = 'Function: inline_header_fn \n\tlocal stack: 8 bytes\n\tmax stack (including callees): 8 bytes\n';
+        const merged = mergeStackReports([parseStackReport(report)!, parseStackReport(report)!])!;
+        assert.strictEqual(merged.functions.filter(fn => fn.name === 'inline_header_fn').length, 1);
+    });
+
     test('functions defined in the analysed file get its path, so the Stack Tree can jump to them', () => {
         const report = [
             'Function: helper ', '\tlocal stack: 16 bytes', '\tmax stack (including callees): 16 bytes', '',
