@@ -1,7 +1,7 @@
 {
   "name": "coretrace",
   "displayName": "CoreTrace",
-  "description": "Integration for CoreTrace CLI",
+  "description": "Security and quality analysis of C, C++ and Python code with the CoreTrace CLI",
   "version": "0.3.6",
   "publisher": "CoreTrace",
   "icon": "icon.png",
@@ -12,6 +12,7 @@
   "keywords": [
     "c",
     "cpp",
+    "python",
     "security",
     "static analysis",
     "audit",

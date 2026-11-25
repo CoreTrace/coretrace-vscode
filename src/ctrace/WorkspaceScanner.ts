@@ -129,11 +129,15 @@ export async function partitionFiles(files: string[], contextKey: string): Promi
  * header in the workspace. Header edits therefore invalidate the whole cache,
  * since an unchanged .c file may include a changed header.
  */
-export async function analysisContextKey(values: unknown[], dependencyFiles: (string | undefined)[]): Promise<string> {
+export async function analysisContextKey(
+    values: unknown[],
+    dependencyFiles: (string | undefined)[],
+    dependencyGlob: string = HEADER_GLOB
+): Promise<string> {
     const hash = crypto.createHash('sha1');
     hash.update(JSON.stringify(values));
-    const headers = await vscode.workspace.findFiles(HEADER_GLOB, EXCLUDE_GLOB);
-    const statFiles = [...dependencyFiles.filter((f): f is string => Boolean(f)), ...headers.map(u => u.fsPath).sort()];
+    const dependencies = await vscode.workspace.findFiles(dependencyGlob, EXCLUDE_GLOB);
+    const statFiles = [...dependencyFiles.filter((f): f is string => Boolean(f)), ...dependencies.map(u => u.fsPath).sort()];
     for (const file of statFiles) {
         try {
             const stat = await fs.promises.stat(file);
@@ -146,6 +150,11 @@ export async function analysisContextKey(values: unknown[], dependencyFiles: (st
 }
 
 const HEADER_GLOB = '**/*.{h,hh,hpp,hxx,h++,inl,inc,ipp,tpp}';
+/**
+ * What a Python result depends on besides the file itself: the dependency
+ * rules of the Python analyzer read the project's requirement manifests.
+ */
+export const PYTHON_MANIFEST_GLOB = '**/{requirements*.txt,pyproject.toml,setup.py,setup.cfg,Pipfile,Pipfile.lock,poetry.lock,uv.lock,advisories.json}';
 /** Directories that should never be scanned (build artifacts, vendored code…) */
 const EXCLUDE_GLOB = '{**/node_modules/**,**/build/**,**/out/**,**/dist/**,**/.git/**,**/CMakeFiles/**,**/cmake-build-*/**}';
 

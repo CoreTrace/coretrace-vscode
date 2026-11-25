@@ -53,9 +53,58 @@ const ALLOWED_INVOKE_TOOLS = new Set([
     'flawfinder',
     'ikos',
     'tscancode',
+    'coretrace-python-analyzer',
 ]);
-const STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'];
+const STATIC_TOOLS = ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer', 'coretrace-python-analyzer'];
 const DYNAMIC_TOOLS = ['coretrace-runtime-analyzer'];
+
+export type SourceLanguage = 'c' | 'python';
+
+export const PYTHON_ANALYZER = 'coretrace-python-analyzer';
+
+/**
+ * The tools that analyse each language. Only these are passed to ctrace for a
+ * file: a ctrace older than 0.85 rejects the whole run when --invoke names the
+ * Python analyzer, so C and C++ runs must never name it.
+ */
+const TOOLS_BY_LANGUAGE: Record<SourceLanguage, { static: string[]; dynamic: string[] }> = {
+    c: { static: ['cppcheck', 'flawfinder', 'ikos', 'tscancode', 'ctrace_stack_analyzer'], dynamic: DYNAMIC_TOOLS },
+    // The runtime analyzer builds and runs C and C++ programs only.
+    python: { static: [PYTHON_ANALYZER], dynamic: [] },
+};
+
+const SOURCE_EXTENSIONS: Record<SourceLanguage, string[]> = {
+    c: ['.c', '.cpp', '.cc', '.cxx'],
+    python: ['.py'],
+};
+/** Headers can be analysed on their own when opened, but are not scanned in a workspace. */
+const C_HEADER_EXTENSIONS = ['.h', '.hpp', '.hh'];
+
+/** The language ctrace analyses a file as, or undefined when it cannot analyse it. */
+export function sourceLanguage(filePath: string): SourceLanguage | undefined {
+    const ext = path.extname(filePath).toLowerCase();
+    if (SOURCE_EXTENSIONS.c.includes(ext) || C_HEADER_EXTENSIONS.includes(ext)) { return 'c'; }
+    if (SOURCE_EXTENSIONS.python.includes(ext)) { return 'python'; }
+    return undefined;
+}
+
+/** Brace list of the extensions a workspace scan looks for, e.g. "{c,cpp,py}". */
+export function workspaceSourceExtensions(languages: SourceLanguage[]): string {
+    return `{${languages.flatMap(language => SOURCE_EXTENSIONS[language]).map(ext => ext.slice(1)).join(',')}}`;
+}
+
+/** Python environments and caches: third-party code, not the user's. */
+export const PYTHON_EXCLUDED_DIRS = ['.venv', 'venv', '__pycache__', 'site-packages', '.tox', '.nox', '.mypy_cache', '.pytest_cache'];
+
+/**
+ * Whether a run with these settings analyses files of `language`. C and C++
+ * files are always sent, as before; Python files need the Python analyzer.
+ */
+export function analysesLanguage(uiState: CtraceUIState, language: SourceLanguage): boolean {
+    if (language === 'c') { return true; }
+    return uiState.staticEnabled !== false
+        && (uiState.staticTools === undefined || uiState.staticTools.includes(PYTHON_ANALYZER));
+}
 
 /**
  * Converts Webview state and VS Code settings into safe ctrace CLI arguments.
@@ -64,7 +113,8 @@ const DYNAMIC_TOOLS = ['coretrace-runtime-analyzer'];
  */
 export function buildCtraceArgs(
     uiState: CtraceUIState,
-    vscodeConfig: vscode.WorkspaceConfiguration
+    vscodeConfig: vscode.WorkspaceConfiguration,
+    language: SourceLanguage = 'c'
 ): string[] {
     const args: string[] = [];
 
@@ -79,17 +129,20 @@ export function buildCtraceArgs(
         args.push(`--entry-points=${entryPoints.join(',')}`);
     }
 
-    const staticTools = normalizeTools(uiState.staticTools, STATIC_TOOLS);
-    const dynamicTools = normalizeTools(uiState.dynamicTools, DYNAMIC_TOOLS);
+    // Only the tools of this file's language count: a C run with every C
+    // tool selected is a full --static run, whatever the Python analyzer says.
+    const languageTools = TOOLS_BY_LANGUAGE[language];
+    const staticTools = normalizeTools(uiState.staticTools, STATIC_TOOLS).filter(tool => languageTools.static.includes(tool));
+    const dynamicTools = normalizeTools(uiState.dynamicTools, DYNAMIC_TOOLS).filter(tool => languageTools.dynamic.includes(tool));
     const partialTools: string[] = [];
 
-    if (uiState.staticEnabled !== false && staticTools.length === STATIC_TOOLS.length) {
+    if (uiState.staticEnabled !== false && languageTools.static.length > 0 && staticTools.length === languageTools.static.length) {
         args.push('--static');
     } else if (uiState.staticEnabled !== false) {
         partialTools.push(...staticTools);
     }
 
-    if (uiState.dynamicEnabled !== false && dynamicTools.length === DYNAMIC_TOOLS.length) {
+    if (uiState.dynamicEnabled !== false && languageTools.dynamic.length > 0 && dynamicTools.length === languageTools.dynamic.length) {
         args.push('--dyn');
     } else if (uiState.dynamicEnabled !== false) {
         partialTools.push(...dynamicTools);
@@ -116,6 +169,7 @@ export function buildCtraceArgs(
         .filter((tool, index, tools): tool is string =>
             typeof tool === 'string' &&
             ALLOWED_INVOKE_TOOLS.has(tool) &&
+            (languageTools.static.includes(tool) || languageTools.dynamic.includes(tool)) &&
             tools.indexOf(tool) === index
         );
     if (invokedTools.length > 0) {
