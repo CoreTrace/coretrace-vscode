@@ -29,6 +29,7 @@ import { checkDependencies, installDependencies } from './ctrace/DependencyInsta
 import { StackManager } from './ctrace/StackManager';
 import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
 import { FindingsStore } from './ctrace/FindingsStore';
+import { EXIT_INCOMPLETE, failedTools } from './ctrace/RunOutcome';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -444,6 +445,8 @@ export function activate(context: vscode.ExtensionContext) {
                     const step = queue.length > 0 ? 100 / queue.length : 100;
 
                     let hadToolExecutionWarning = false;
+                    // Files whose run exited 3: their findings are shown, but some tools did not run.
+                    const incompleteRuns: { file: string; tools: string[] }[] = [];
                     try {
                         for (let i = 0; i < queue.length; i++) {
                             if (token.isCancellationRequested) {
@@ -503,6 +506,12 @@ export function activate(context: vscode.ExtensionContext) {
                             output.appendLine(`[exit ${exitCode ?? 0}]`);
 
                             const combined = (stdout || '') + (stderr || '');
+                            const incomplete = exitCode === EXIT_INCOMPLETE;
+                            if (incomplete) {
+                                const tools = failedTools(combined);
+                                incompleteRuns.push({ file: fileName, tools });
+                                output.appendLine(`[ctrace] Incomplete analysis of ${fileName}: ${tools.length ? `${tools.join(', ')} could not run` : 'a tool could not run'}.`);
+                            }
                             if (/(?:command not found|unrecognized command line option|cannot execute binary file|execvp: No such file or directory|can't open file '.*(?:flawfinder|ikos|tscancode|cppcheck).*':\s*\[Errno 2\] No such file or directory|\/opt\/homebrew\/bin\/cppcheck:\s*(?:No such file or directory|not found))/i.test(combined)) {
                                 hadToolExecutionWarning = true;
                                 output.appendLine('[ctrace warning] Note: one or more static analysis tools (e.g. cppcheck/flawfinder/ikos/tscancode) could not be executed by ctrace.');
@@ -581,8 +590,9 @@ export function activate(context: vscode.ExtensionContext) {
                                 allSarif.push(sarif);
                                 lastSarifByFile.set(fp, sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace, { isIgnored });
-                                if (incremental && !killed && queue[i].hash) {
-                                    cacheFileAnalysis(queue[i], contextKeys[language] ?? '', { sarif, stack: fileStack });
+                                // An incomplete result is not cached: the next scan retries the file.
+                                if (incremental && !killed && !incomplete && queue[i].hash) {
+                                    cacheFileAnalysis(queue[i], contextKeys[language] ?? '', { sarif, stack: fileStack, complete: true });
                                 }
                             } else if (!scanWorkspace) {
                                 // Single-file mode: report parse failure immediately
@@ -633,7 +643,20 @@ export function activate(context: vscode.ExtensionContext) {
                             ? ` across ${filesToAnalyze.length} files`
                             : '') + (cachedCount > 0 ? ` (${cachedCount} unchanged, reused from cache)` : '');
 
-                        if (total > 0) {
+                        if (incompleteRuns.length > 0) {
+                            const tools = [...new Set(incompleteRuns.flatMap(run => run.tools))];
+                            const which = tools.length > 0 ? tools.join(', ') : 'some tools';
+                            const files = incompleteRuns.length === 1 ? incompleteRuns[0].file : `${incompleteRuns.length} files`;
+                            vscode.window.showWarningMessage(
+                                `Analysis incomplete — ${total} issue${total === 1 ? '' : 's'} found${filesSuffix}, but ${which} could not run on ${files}: their findings are missing. See the Ctrace output channel.`
+                            );
+                            sidebarProvider.postMessage({
+                                type: 'analysis-status',
+                                status: 'error',
+                                message: 'Analysis incomplete',
+                                detail: `${which} could not run on ${files}`,
+                            });
+                        } else if (total > 0) {
                             vscode.window.showInformationMessage(
                                 `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
                             );

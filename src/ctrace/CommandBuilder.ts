@@ -399,7 +399,7 @@ async function finishFallbackCommand(
     const libDir = getLibDirForBinary(ctracePath);
     const libEnv = libDir ? `export LD_LIBRARY_PATH=${shellEscapeArg(toWslPath(libDir))}:"$LD_LIBRARY_PATH" && ` : '';
 
-    const script = `${wslToolEnvironment()}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; rm -f ${shellEscapeArg(lBin)}`;
+    const script = `${wslToolEnvironment()}${libEnv}cp ${shellEscapeArg(wBin)} ${shellEscapeArg(lBin)} && chmod +x ${shellEscapeArg(lBin)} && ${shellEscapeArg(lBin)} --input ${shellEscapeArg(wInput)}${extraArgs} ${validatedParams}; status=$?; rm -f ${shellEscapeArg(lBin)}; exit "$status"`;
     return await writeWslScript(script, null, tempFiles);
 }
 

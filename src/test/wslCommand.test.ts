@@ -55,6 +55,8 @@ suite('WSL command Test Suite', () => {
         assert.ok(text.includes("'--compile-commands=/mnt/c/My Project/build/compile_commands.json'"), text);
         assert.ok(text.includes("--input '/mnt/c/My Project/src/main.c'"), text);
         assert.match(built.command, /^wsl --exec sh "/);
+        // The script cleans up its copy after ctrace but exits with ctrace's code.
+        assert.match(text, /; status=\$\?; rm -f '[^']+'; exit "\$status"\n?$/, text);
     });
 
     test('a source inside a WSL distribution with spaces runs in that distribution', async () => {
