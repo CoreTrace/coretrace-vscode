@@ -14,6 +14,27 @@ const REPO_LATEST_RELEASE_URL = 'https://api.github.com/repos/CoreTrace/coretrac
 
 let updatePromise: Promise<string | null> | null = null;
 
+/** Why the last attempt to get a CLI failed, for a fresh install that has none. */
+export interface BinaryProblem {
+    kind: 'release-lookup' | 'no-asset' | 'download';
+    message: string;
+}
+
+let lastProblem: BinaryProblem | undefined;
+
+export function getLastBinaryProblem(): BinaryProblem | undefined {
+    return lastProblem;
+}
+
+let fetchImpl: typeof fetch = (input, init) => fetch(input, init);
+
+/** Replaces the HTTP client, so tests can answer like GitHub without the network. */
+export function setFetchForTesting(fake: typeof fetch | undefined): void {
+    fetchImpl = fake ?? ((input, init) => fetch(input, init));
+}
+
+class ReleaseLookupError extends Error {}
+
 export function isUpdatingBinary(): boolean {
     return updatePromise !== null;
 }
@@ -24,11 +45,19 @@ export function setBinaryUpdateListener(listener: (msg: string) => void) {
     progressListener = listener;
 }
 
-export async function ensureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<string | null> {
+/**
+ * @param options.force Check GitHub now, even within the backoff after a failed
+ *                      check (the user asked to retry).
+ */
+export async function ensureBinary(
+    context: vscode.ExtensionContext,
+    output: vscode.OutputChannel,
+    options: { force?: boolean } = {}
+): Promise<string | null> {
     if (updatePromise) {
         return updatePromise;
     }
-    updatePromise = doEnsureBinary(context, output).finally(() => {
+    updatePromise = doEnsureBinary(context, output, options.force === true).finally(() => {
         updatePromise = null;
         if (progressListener) {
             progressListener('__done__');
@@ -37,7 +66,7 @@ export async function ensureBinary(context: vscode.ExtensionContext, output: vsc
     return updatePromise;
 }
 
-async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel): Promise<string | null> {
+async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.OutputChannel, force: boolean): Promise<string | null> {
     // 1. If binary is bundled with the extension (e.g. Target-Platform Marketplace package)
     const bundledBinary = await locateBinary(context.extensionUri.fsPath);
     if (bundledBinary) {
@@ -65,18 +94,26 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
 
     // When there is no cached binary, keep retrying with a short backoff.
     // This avoids a 12-hour lockout if the very first download fails.
-    if (!downloadedBinaryPath && now - lastFailedCheck < FAILURE_BACKOFF) {
+    // The reason of that failure, in lastProblem, stays valid meanwhile.
+    if (!force && !downloadedBinaryPath && now - lastFailedCheck < FAILURE_BACKOFF) {
         output.appendLine('Skipping update check due to recent failure backoff.');
         return await locateBinaryOnPath();
     }
 
+    lastProblem = undefined;
+    let stage: BinaryProblem['kind'] = 'release-lookup';
     try {
-        const response = await fetch(REPO_LATEST_RELEASE_URL, {
-            headers: { 'User-Agent': 'vscode-coretrace' },
-            signal: AbortSignal.timeout(5000)
-        });
+        let response: Response;
+        try {
+            response = await fetchImpl(REPO_LATEST_RELEASE_URL, {
+                headers: githubHeaders(),
+                signal: AbortSignal.timeout(5000)
+            });
+        } catch (error) {
+            throw new ReleaseLookupError(`GitHub could not be reached (${(error as Error).message}).`);
+        }
         if (!response.ok) {
-            throw new Error(`Failed to check releases: HTTP ${response.status}`);
+            throw new ReleaseLookupError(await describeGitHubFailure(response));
         }
         const release = await response.json() as { tag_name: string; assets: any[] };
         const latestVersion = release.tag_name;
@@ -87,6 +124,7 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         if (latestVersion !== currentVersion || !cachedBinaryPath) {
             const assetInfo = getAssetForPlatform(release.assets);
             if (assetInfo) {
+                stage = 'download';
                 output.appendLine(`Selected release asset: ${assetInfo.name}`);
                 if (progressListener) { progressListener("0%"); }
                 await vscode.window.withProgress({
@@ -104,6 +142,10 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
                 });
             } else {
                 output.appendLine(`No GitHub release asset found for platform ${process.platform} arch ${process.arch}`);
+                lastProblem = {
+                    kind: 'no-asset',
+                    message: `CoreTrace ${latestVersion} has no prebuilt binary for ${process.platform} ${process.arch}.`,
+                };
             }
         }
 
@@ -115,6 +157,10 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
         
     } catch (err: any) {
         output.appendLine(`Failed to check for CoreTrace updates: ${err.message}`);
+        lastProblem = {
+            kind: err instanceof ReleaseLookupError ? 'release-lookup' : stage,
+            message: err.message,
+        };
         await context.globalState.update('coretrace-last-failed-update-check', now);
 
         // Keep old behaviour only when we already have a working cached binary.
@@ -129,6 +175,41 @@ async function doEnsureBinary(context: vscode.ExtensionContext, output: vscode.O
 
     // Bundled was already checked at the top; last resort is a user-installed ctrace.
     return await locateBinaryOnPath();
+}
+
+function githubHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'User-Agent': 'vscode-coretrace' };
+    // An authenticated request gets a much higher rate limit.
+    if (process.env.GITHUB_TOKEN) { headers.Authorization = `token ${process.env.GITHUB_TOKEN}`; }
+    return headers;
+}
+
+/**
+ * Turns a failed GitHub API answer into something a user can act on: the
+ * status, GitHub's own message, and when the rate limit lets them retry.
+ */
+export async function describeGitHubFailure(response: Response): Promise<string> {
+    let detail = '';
+    try {
+        const body = await response.text();
+        try {
+            const message = (JSON.parse(body) as { message?: unknown }).message;
+            detail = typeof message === 'string' ? message : '';
+        } catch {
+            detail = body.trim().slice(0, 200);
+        }
+    } catch { /* no body */ }
+
+    const parts = [`GitHub answered HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}${detail ? `: ${detail}` : ''}.`];
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    const reset = Number(response.headers.get('x-ratelimit-reset'));
+    const retryAfter = Number(response.headers.get('retry-after'));
+    if (remaining === '0' && Number.isFinite(reset) && reset > 0) {
+        parts.push(`The API rate limit of this network is used up until ${new Date(reset * 1000).toLocaleTimeString()}; setting GITHUB_TOKEN raises it.`);
+    } else if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        parts.push(`GitHub asks to retry in ${retryAfter} s.`);
+    }
+    return parts.join(' ');
 }
 
 const ARCHIVE_EXTENSIONS: Record<string, string[]> = {
@@ -220,7 +301,7 @@ export async function downloadAndExtract(url: string, assetName: string, destDir
 
     let response: Response;
     try {
-        response = await fetch(url, { headers, signal: controller.signal });
+        response = await fetchImpl(url, { headers, signal: controller.signal });
     } catch (error) {
         clearTimeout(timeoutId);
         throw error;
