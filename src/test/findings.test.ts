@@ -193,7 +193,7 @@ suite('Incremental workspace scan Test Suite', () => {
             let partition = await partitionFiles([a, b], 'key1');
             assert.deepStrictEqual(partition.changed.map(f => f.fsPath), [a, b]);
             for (const file of partition.changed) {
-                cacheFileAnalysis(file, 'key1', { sarif: emptySarif(path.basename(file.fsPath)), stack: null });
+                cacheFileAnalysis(file, 'key1', { sarif: emptySarif(path.basename(file.fsPath)), stack: null, complete: true });
             }
 
             partition = await partitionFiles([a, b], 'key1');
@@ -221,7 +221,7 @@ suite('Incremental workspace scan Test Suite', () => {
         try {
             await initAnalysisCache(storage);
             for (const file of (await partitionFiles([a, gone], 'key')).changed) {
-                cacheFileAnalysis(file, 'key', { sarif: emptySarif('x'), stack: null });
+                cacheFileAnalysis(file, 'key', { sarif: emptySarif('x'), stack: null, complete: true });
             }
             fs.unlinkSync(gone);
             await persistAnalysisCache();
@@ -237,6 +237,27 @@ suite('Incremental workspace scan Test Suite', () => {
             assert.deepStrictEqual(partition.changed, []);
             assert.ok(partition.cached.has(a));
             assert.ok(!JSON.parse(persisted).some(([p]: [string]) => p === gone));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('incomplete analyses, and entries saved before the flag existed, are analysed again', async () => {
+        const dir = tempDir('ctrace-incr-');
+        const done = path.join(dir, 'done.c');
+        const partial = path.join(dir, 'partial.c');
+        const legacy = path.join(dir, 'legacy.c');
+        for (const file of [done, partial, legacy]) { fs.writeFileSync(file, `int ${path.basename(file, '.c')};`); }
+        try {
+            const [d, p, l] = (await partitionFiles([done, partial, legacy], 'key')).changed;
+            cacheFileAnalysis(d, 'key', { sarif: emptySarif('done'), stack: null, complete: true });
+            cacheFileAnalysis(p, 'key', { sarif: emptySarif('partial'), stack: null, complete: false });
+            // As written by a version without the flag.
+            cacheFileAnalysis(l, 'key', { sarif: emptySarif('legacy'), stack: null });
+
+            const partition = await partitionFiles([done, partial, legacy], 'key');
+            assert.deepStrictEqual([...partition.cached.keys()], [done]);
+            assert.deepStrictEqual(partition.changed.map(f => f.fsPath).sort(), [legacy, partial].sort());
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }

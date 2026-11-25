@@ -18,6 +18,11 @@ export interface WorkspaceFile {
 export interface CachedFileAnalysis {
     sarif: SarifLog;
     stack: StackReport | null;
+    /**
+     * Every requested tool ran. Only complete analyses are cached; entries
+     * saved before this flag existed may hold partial results and are redone.
+     */
+    complete?: boolean;
 }
 
 export interface PartitionResult {
@@ -113,7 +118,7 @@ export async function partitionFiles(files: string[], contextKey: string): Promi
     for (const fsPath of files) {
         const hash = await fileContentHash(fsPath);
         const entry = _analysisCache.get(fsPath);
-        if (hash && entry && entry.hash === hash && entry.contextKey === contextKey) {
+        if (hash && entry && entry.hash === hash && entry.contextKey === contextKey && entry.analysis.complete === true) {
             cached.set(fsPath, entry.analysis);
         } else {
             changed.push({ fsPath, hash: hash ?? '' });

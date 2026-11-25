@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isWslAvailable } from './CommandBuilder';
+import { CPPCHECK_RESOLVER_SH, HOMEBREW_INSTALL_SH, installErrors } from './ToolPaths';
 
 let mockPasswordlessSudo: boolean | null = null;
 
@@ -131,30 +132,11 @@ export async function checkDependencies(distro?: string | null): Promise<Depende
         IKOS_OK=0
         TSCANCODE_OK=0
 
-        check_cppcheck_sarif() {
-            local bin="$1"
-            [ -n "$bin" ] && [ -x "$bin" ] || return 1
-            if "$bin" --output-format=sarif /dev/null >/dev/null 2>&1; then
-                return 0
-            fi
-            local ver=$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-            if [ -n "$ver" ]; then
-                local major=$(echo "$ver" | cut -d. -f1)
-                local minor=$(echo "$ver" | cut -d. -f2)
-                [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 14 ]; } && return 0
-            fi
-            return 1
-        }
-
+        ${CPPCHECK_RESOLVER_SH}
         if has_cmd cppcheck; then CPPCHECK_SYS=1; fi
-        if has_file /opt/homebrew/bin/cppcheck; then
-            CPPCHECK_BREW=1
-            if check_cppcheck_sarif /opt/homebrew/bin/cppcheck; then
-                CPPCHECK_SARIF=1
-            fi
-        elif check_cppcheck_sarif "$(command -v cppcheck 2>/dev/null)"; then
-            CPPCHECK_SARIF=1
-        fi
+        if has_file "\${CORETRACE_HOMEBREW_BIN:-/opt/homebrew/bin}/cppcheck"; then CPPCHECK_BREW=1; fi
+        # Same choice as the analysis command makes (see ToolPaths.ts).
+        if [ -n "$(coretrace_resolve_cppcheck)" ]; then CPPCHECK_SARIF=1; fi
 
         if has_file "$HOME/.coretrace/tools/flawfinder/src/flawfinder-build/flawfinder.py" || has_cmd flawfinder; then
             FLAWFINDER_OK=1
@@ -185,7 +167,8 @@ export async function checkDependencies(distro?: string | null): Promise<Depende
     };
 
     const missing: string[] = [];
-    if (!details.cppcheckHomebrew || !details.cppcheckSarif) {
+    // Any SARIF-capable Cppcheck will do, wherever it is installed.
+    if (!details.cppcheckSarif) {
         missing.push('cppcheck');
     }
     if (!details.flawfinder) {
@@ -236,11 +219,7 @@ elif command -v apk >/dev/null 2>&1; then
     echo "Detected Alpine Linux (apk)."
     apk add --no-cache cppcheck flawfinder build-base git cmake python3 py3-pip curl || true
 elif command -v brew >/dev/null 2>&1; then
-    echo "Detected macOS (Homebrew)."
-    # Homebrew refuses to run as root, so install as the invoking user.
-    sudo -u "\${SUDO_USER:-$(id -un)}" brew install cppcheck flawfinder cmake python3 || true
-    # IKOS is only published through NASA's tap (builds LLVM deps, can take a while).
-    sudo -u "\${SUDO_USER:-$(id -un)}" brew install nasa-sw-vnv/core/ikos || true
+${HOMEBREW_INSTALL_SH}
 else
     echo "Warning: Unrecognized package manager. Please ensure git, g++, make, cmake, python3, and curl are installed."
 fi
@@ -393,32 +372,15 @@ export async function installDependencies(
     progress.report({ message: 'Installing packages & building analyzers in WSL/Linux...', increment: 20 });
 
     if (process.platform !== 'win32' && !(await canRunSudoWithoutPassword())) {
-        const scriptPath = path.join(os.tmpdir(), `coretrace-install-${Date.now()}-${process.pid}.sh`);
-        await fs.promises.writeFile(scriptPath, script, { mode: 0o755 });
         output.appendLine('[CoreTrace] sudo requires a password on this machine. Launching installer in interactive VS Code terminal...');
         vscode.window.showInformationMessage(
             'CoreTrace dependency installation requires administrator (sudo) privileges. Please enter your password in the opened terminal to proceed.'
         );
-        const terminal = vscode.window.createTerminal({ name: 'CoreTrace: Install Dependencies' });
-        terminal.show(true);
-        terminal.sendText(`sudo "${scriptPath}" && rm -f "${scriptPath}"`);
-
-        const disposable = vscode.window.onDidCloseTerminal(async (closedTerminal) => {
-            if (closedTerminal === terminal) {
-                disposable.dispose();
-                try { await fs.promises.unlink(scriptPath).catch(() => {}); } catch {}
-                const status = await checkDependencies(distro);
-                if (status.allInstalled) {
-                    output.appendLine('[CoreTrace] All dependencies (cppcheck, flawfinder, ikos, tscancode) are operational!');
-                    vscode.window.showInformationMessage('CoreTrace analyzers (cppcheck, flawfinder, ikos, tscancode) have been successfully installed and configured!');
-                } else {
-                    const missingList = status.missing.join(', ');
-                    output.appendLine(`[CoreTrace] Some dependencies could not be verified: ${missingList}`);
-                    vscode.window.showWarningMessage(`Dependency setup finished, but some tools could not be verified: ${missingList}. Check the Output channel.`);
-                }
-            }
-        });
-        return true;
+        progress.report({ message: 'Waiting for the installer in the terminal...' });
+        const log = await runInstallerInTerminal(script);
+        output.append(log);
+        progress.report({ message: 'Verifying installed tools...', increment: 5 });
+        return reportVerification(await checkDependencies(distro), installErrors(log), output);
     }
 
     const result = await execShellCommand(script, {
@@ -448,16 +410,62 @@ export async function installDependencies(
 
     // Verify after installation
     progress.report({ message: 'Verifying installed tools...', increment: 5 });
-    const status = await checkDependencies(distro);
+    return reportVerification(await checkDependencies(distro), installErrors(result.stdout + result.stderr), output);
+}
 
+/**
+ * Tells the user what the installation achieved. A package-manager error
+ * (e.g. Homebrew refusing an untrusted tap formula for IKOS) is shown as
+ * is, since it says what to do; returns whether every tool now works.
+ */
+function reportVerification(status: DependencyStatus, errors: string[], output: vscode.OutputChannel): boolean {
     if (status.allInstalled) {
         output.appendLine('[CoreTrace] All dependencies (cppcheck, flawfinder, ikos, tscancode) are operational!');
         vscode.window.showInformationMessage('CoreTrace analyzers (cppcheck, flawfinder, ikos, tscancode) have been successfully installed and configured!');
         return true;
+    }
+    const missingList = status.missing.join(', ');
+    output.appendLine(`[CoreTrace] Some dependencies could not be verified: ${missingList}`);
+    errors.forEach(error => output.appendLine(`[CoreTrace] Installer error: ${error}`));
+    if (errors.length > 0) {
+        vscode.window.showErrorMessage(
+            `Could not install ${missingList}. ${errors.join(' ')} Fix this, then install the analyzers again.`, 'Show Output'
+        ).then(action => { if (action) { output.show(true); } });
     } else {
-        const missingList = status.missing.join(', ');
-        output.appendLine(`[CoreTrace] Some dependencies could not be verified: ${missingList}`);
         vscode.window.showWarningMessage(`Dependency setup finished, but some tools could not be verified: ${missingList}. Check the Output channel.`);
-        return false;
+    }
+    return false;
+}
+
+/**
+ * Runs the installer with sudo in a terminal, where the user types the
+ * password, and resolves with its output once the terminal is closed.
+ * The script and its log live in a private folder: a predictable name in
+ * the shared temporary directory could be replaced before sudo runs it.
+ */
+async function runInstallerInTerminal(script: string): Promise<string> {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'coretrace-install-'));
+    const scriptPath = path.join(dir, 'install.sh');
+    const logPath = path.join(dir, 'install.log');
+    await fs.promises.writeFile(scriptPath, script, { mode: 0o700 });
+    const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+    try {
+        await new Promise<void>(resolve => {
+            const terminal = vscode.window.createTerminal({
+                name: 'CoreTrace: Install Dependencies',
+                shellPath: '/bin/sh',
+                shellArgs: ['-c', `sudo sh ${quote(scriptPath)} 2>&1 | tee ${quote(logPath)}; echo; echo 'Installer finished: press Enter to close this terminal.'; read _`],
+            });
+            const disposable = vscode.window.onDidCloseTerminal(closed => {
+                if (closed === terminal) {
+                    disposable.dispose();
+                    resolve();
+                }
+            });
+            terminal.show(true);
+        });
+        return await fs.promises.readFile(logPath, 'utf8').catch(() => '');
+    } finally {
+        await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => { /* best effort */ });
     }
 }
