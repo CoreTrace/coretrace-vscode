@@ -11,7 +11,7 @@ import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRe
 import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, prepareScanDirectory, shellQuoteArgs, CtraceUIState, sourceLanguage, analysesLanguage, workspaceSourceExtensions, PYTHON_EXCLUDED_DIRS, SourceLanguage } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
-import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
+import { ensureBinary, getLastBinaryProblem, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
 import {
     clearCache,
     findCompileCommandsPath,
@@ -135,9 +135,26 @@ export function activate(context: vscode.ExtensionContext) {
             const hint = process.platform === 'darwin' && process.arch !== 'arm64'
                 ? '\nCoreTrace publishes no prebuilt binary for Intel Macs: build it from https://github.com/CoreTrace/coretrace and put `ctrace` on your PATH.'
                 : '';
-            vscode.window.showErrorMessage(
-                `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\n- PATH${hint}\nSee the "Ctrace" Output channel for details.`
-            );
+            const problem = getLastBinaryProblem();
+            // A failed lookup or download can succeed on a retry; a missing platform build cannot.
+            const retryable = problem && problem.kind !== 'no-asset';
+            const message = problem?.kind === 'release-lookup'
+                ? `No ctrace binary is installed yet, and CoreTrace could not look up its latest release. ${problem.message}`
+                : problem?.kind === 'download'
+                    ? `No ctrace binary is installed yet, and downloading it failed. ${problem.message}`
+                    : `Ctrace binary could not be found or downloaded. Checked: \n- ${globalStorage}/bin\n- ${extPath}\n- PATH${problem ? `\n${problem.message}` : ''}${hint}`;
+            const actions = retryable ? ['Retry', 'Show Output'] : ['Show Output'];
+            void vscode.window.showErrorMessage(message, ...actions).then(async action => {
+                if (action === 'Show Output') { output.show(true); }
+                if (action === 'Retry') {
+                    const binary = await ensureBinary(context, output, { force: true }).catch(() => null);
+                    if (binary) {
+                        vscode.window.showInformationMessage('ctrace is installed. Run the analysis again.');
+                    } else {
+                        void locateOrError();
+                    }
+                }
+            });
         }
         return p;
     }
