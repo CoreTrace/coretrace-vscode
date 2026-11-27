@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand, executionTarget, isWslAvailable } from './ctrace/CommandBuilder';
+import { buildCommand, executionTarget, isWslAvailable, wslDistroOf } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
@@ -323,29 +323,53 @@ export function activate(context: vscode.ExtensionContext) {
                 : DEFAULT_TIMEOUT_MS;
 
             // Dynamic analysis needs the runtime analyzer, which macOS releases
-            // do not include. Without it, ctrace would only report a missing
-            // command: run the static tools and say how to stop asking.
-            // shortcut: probes where the first C file runs; a workspace split across WSL distros gets that one's answer.
-            const firstCFile = filesToAnalyze.find(file => sourceLanguage(file) === 'c');
-            if (firstCFile && requestsDynamicAnalysis(effectiveUiState)
-                && !(await isRuntimeAnalyzerAvailable(executionTarget(ctracePath, firstCFile), configuredRuntimeAnalyzer(effectiveUiState.configFile)))) {
-                effectiveUiState = { ...effectiveUiState, dynamicEnabled: false };
-                const cArgs = buildCtraceArgs({ ...effectiveUiState, reportFile: '<report>' }, ctraceConfig, 'c');
-                if (!cArgs.some(arg => arg === '--static' || arg === '--dyn' || arg.startsWith('--invoke'))) {
-                    // Nothing left to run: ctrace would report a clean result without checking anything.
-                    const message = 'No analyzer to run: dynamic analysis needs coretrace-runtime-analyzer, which this ctrace cannot find '
-                        + '(macOS releases do not include it), and the static tools are turned off.';
-                    output.appendLine(`[ctrace] ${message}`);
-                    vscode.window.showWarningMessage(message);
-                    isRunning = false;
-                    sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected', detail: message });
-                    sidebarProvider.postMessage({ type: 'analysis-done' });
-                    return;
+            // do not include and each WSL distribution may lack: files that run
+            // where it is missing are analysed without it.
+            const dynamicSkipped = new Set<string>();
+            const missingTargets = new Set<string>();
+            if (requestsDynamicAnalysis(effectiveUiState)) {
+                const configured = configuredRuntimeAnalyzer(effectiveUiState.configFile);
+                // Where ctrace runs depends only on the input's WSL distribution.
+                const probes = new Map<string, Promise<{ key: string; available: boolean }>>();
+                for (const file of filesToAnalyze.filter(f => sourceLanguage(f) === 'c')) {
+                    const distro = process.platform === 'win32' ? wslDistroOf(file) ?? '' : '';
+                    if (!probes.has(distro)) {
+                        const target = executionTarget(ctracePath, file);
+                        probes.set(distro, isRuntimeAnalyzerAvailable(target, configured)
+                            .then(available => ({ key: `${target.distro ?? ''}:${target.binary}`, available })));
+                    }
+                    const probe = await probes.get(distro)!;
+                    if (!probe.available) {
+                        dynamicSkipped.add(file);
+                        missingTargets.add(probe.key);
+                    }
                 }
-                const message = 'Dynamic analysis was skipped: this ctrace has no coretrace-runtime-analyzer '
-                    + '(macOS releases do not include it). The static tools ran as usual.';
-                output.appendLine(`[ctrace] ${message}`);
-                void vscode.window.showWarningMessage(message, 'Turn Off Dynamic Analysis').then(action => {
+            }
+            const noDynamicState: CtraceUIState = { ...effectiveUiState, dynamicEnabled: false, skipRuntimeAnalyzer: true };
+            const stateFor = (file: string) => dynamicSkipped.has(file) ? noDynamicState : effectiveUiState;
+            let dynamicNotice: string | undefined;
+            if (dynamicSkipped.size > 0) {
+                const count = `${dynamicSkipped.size} C/C++ file${dynamicSkipped.size > 1 ? 's' : ''}`;
+                const reason = 'coretrace-runtime-analyzer cannot be found where ctrace runs (macOS releases do not include it)';
+                const cArgs = buildCtraceArgs({ ...noDynamicState, reportFile: '<report>' }, ctraceConfig, 'c');
+                if (cArgs.some(arg => arg === '--static' || arg === '--dyn' || arg.startsWith('--invoke'))) {
+                    dynamicNotice = `Dynamic analysis will be skipped for ${count}: ${reason}. The selected static tools will still run.`;
+                } else {
+                    // No tool left for them: ctrace would report a clean result without checking anything.
+                    filesToAnalyze = filesToAnalyze.filter(file => !dynamicSkipped.has(file));
+                    dynamicNotice = `${count} will not be analysed: ${reason}, and no static C/C++ tool is selected.`;
+                    if (filesToAnalyze.length === 0) {
+                        output.appendLine(`[ctrace] ${dynamicNotice}`);
+                        vscode.window.showWarningMessage(dynamicNotice);
+                        isRunning = false;
+                        sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected', detail: dynamicNotice });
+                        sidebarProvider.postMessage({ type: 'analysis-done' });
+                        return;
+                    }
+                }
+                // The action changes the sidebar's settings, so it only helps runs started from there.
+                const actions = arg?.fromSidebar === true ? ['Turn Off Dynamic Analysis'] : [];
+                void vscode.window.showWarningMessage(dynamicNotice, ...actions).then(action => {
                     if (action) { sidebarProvider.postMessage({ type: 'set-dynamic-analysis', enabled: false }); }
                 });
             }
@@ -362,6 +386,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             output.show(true);
             output.clear();
+            if (dynamicNotice) { output.appendLine(`[ctrace] ${dynamicNotice}`); }
 
             // ── Scan files ───────────────────────────────────────────────────
             // Written before anything runs: without the config, ctrace would
@@ -369,10 +394,16 @@ export function activate(context: vscode.ExtensionContext) {
             let scanDir: string;
             let configPath: string;
             let hasConfig: boolean;
+            let noDynamicConfigPath: string;
+            let hasNoDynamicConfig = false;
             try {
                 scanDir = prepareScanDirectory(context.globalStorageUri.fsPath);
                 configPath = createConfigPath(scanDir);
                 hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
+                noDynamicConfigPath = configPath.replace(/\.json$/, '-nodyn.json');
+                if (dynamicSkipped.size > 0) {
+                    hasNoDynamicConfig = generateConfigFileIfNeeded(noDynamicConfigPath, noDynamicState, workspaceRoot, ctraceConfig);
+                }
             } catch (e) {
                 const message = e instanceof Error ? e.message : String(e);
                 output.appendLine(`[ctrace] ${message}`);
@@ -382,6 +413,10 @@ export function activate(context: vscode.ExtensionContext) {
                 sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
+
+            const configFor = (file: string): string | undefined => dynamicSkipped.has(file)
+                ? (hasNoDynamicConfig ? noDynamicConfigPath : noDynamicState.configFile)
+                : (hasConfig ? configPath : effectiveUiState.configFile);
 
             // ── Run with progress ────────────────────────────────────────────
             await vscode.window.withProgress(
@@ -443,7 +478,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     [language, buildCtraceArgs(placeholderState, ctraceConfig, language), timeoutMs],
                                     [ctracePath], PYTHON_MANIFEST_GLOB)
                                 : await analysisContextKey(
-                                    [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs],
+                                    [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs, [...missingTargets].sort()],
                                     [ctracePath, effectiveUiState.compileCommandsPath, effectiveUiState.configFile]);
                             contextKeys[language] = key;
                             const partition = await partitionFiles(filesToAnalyze.filter(file => (sourceLanguage(file) ?? 'c') === language), key);
@@ -497,9 +532,9 @@ export function activate(context: vscode.ExtensionContext) {
                             // Build & run command for this file.
                             const reportPath = createReportPath(scanDir);
                             const args = buildCtraceArgs({
-                                ...effectiveUiState,
+                                ...stateFor(fp),
                                 reportFile: reportPath,
-                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
+                                configFile: configFor(fp),
                             }, ctraceConfig, language);
                             const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args));
                             tryDelete(reportPath);
@@ -507,9 +542,10 @@ export function activate(context: vscode.ExtensionContext) {
                             output.appendLine(`\n${'─'.repeat(60)}`);
                             output.appendLine(`[${i + 1}/${queue.length}] ${fileName}`);
                             output.appendLine(`$ ${command}`);
-                            if (hasConfig) {
+                            const runConfig = dynamicSkipped.has(fp) ? (hasNoDynamicConfig ? noDynamicConfigPath : undefined) : (hasConfig ? configPath : undefined);
+                            if (runConfig) {
                                 try {
-                                    output.appendLine(`[ctrace config] ${fs.readFileSync(configPath, 'utf8').trim()}`);
+                                    output.appendLine(`[ctrace config] ${fs.readFileSync(runConfig, 'utf8').trim()}`);
                                 } catch {}
                             }
 
@@ -561,17 +597,18 @@ export function activate(context: vscode.ExtensionContext) {
                                 // In that case, run a fast dedicated stack pass (~20ms) to retrieve the call-graph & stack metrics.
                                 // The stack analyzer only reads C and C++.
                                 if (language === 'c' && (!stackReport || stackReport.functions.length === 0)) {
+                                    const fileState = stateFor(fp);
                                     const isStackRequested = (
-                                        (effectiveUiState.staticEnabled !== false &&
-                                            (effectiveUiState.staticTools === undefined || effectiveUiState.staticTools.includes('ctrace_stack_analyzer'))) ||
-                                        (effectiveUiState.dynamicEnabled !== false &&
-                                            effectiveUiState.dynamicTools?.includes('ctrace_stack_analyzer'))
+                                        (fileState.staticEnabled !== false &&
+                                            (fileState.staticTools === undefined || fileState.staticTools.includes('ctrace_stack_analyzer'))) ||
+                                        (fileState.dynamicEnabled !== false &&
+                                            fileState.dynamicTools?.includes('ctrace_stack_analyzer'))
                                     );
                                     if (isStackRequested) {
                                         try {
                                             const stackArgs = buildStackAnalyzerArgs({
-                                                ...effectiveUiState,
-                                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
+                                                ...fileState,
+                                                configFile: configFor(fp),
                                             }, ctraceConfig);
                                             const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs));
                                             try {
@@ -681,6 +718,9 @@ export function activate(context: vscode.ExtensionContext) {
                     } finally {
                         if (hasConfig) {
                             tryDelete(configPath);
+                        }
+                        if (hasNoDynamicConfig) {
+                            tryDelete(noDynamicConfigPath);
                         }
                         if (incremental) {
                             void persistAnalysisCache();

@@ -226,6 +226,11 @@ function matchWslDistro(detectedDistro: string): { distro: string | null } | nul
     }
 }
 
+/** The WSL distribution named in a path, if any. */
+export function wslDistroOf(p: string): string | undefined {
+    return parseWslUNC(p)?.distro;
+}
+
 /**
  * Where buildCommand runs ctrace for this input: the WSL distribution (null:
  * the default one, or the host off Windows) and the path of ctrace there.

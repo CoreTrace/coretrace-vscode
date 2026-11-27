@@ -42,6 +42,8 @@ export interface CtraceUIState {
     analysisProfile?: AnalysisProfile;
     reportFile?: string;
     configFile?: string;
+    /** Set when the runtime analyzer cannot be found: the run's config must not ask for it either. */
+    skipRuntimeAnalyzer?: boolean;
 }
 
 const DEFAULT_PROFILE: AnalysisProfile = 'full';
@@ -367,6 +369,18 @@ function toInternalPath(p: string): string {
  * @throws ScanSetupError when it cannot be written: running without it would
  *         silently drop the requested settings.
  */
+/** Turns the runtime analyzer off in a ctrace config; returns whether it was on. */
+function removeRuntimeAnalyzer(configData: Record<string, any>): boolean {
+    const analysis = configData.analysis;
+    if (typeof analysis !== 'object' || analysis === null) { return false; }
+    const invoke: unknown[] = typeof analysis.invoke === 'string' ? [analysis.invoke] : Array.isArray(analysis.invoke) ? analysis.invoke : [];
+    const invoked = invoke.filter(tool => !DYNAMIC_TOOLS.includes(tool as string));
+    if (analysis.dynamic !== true && invoked.length === invoke.length) { return false; }
+    analysis.dynamic = false;
+    if (analysis.invoke !== undefined) { analysis.invoke = invoked; }
+    return true;
+}
+
 export function generateConfigFileIfNeeded(
     configPath: string,
     uiState: CtraceUIState,
@@ -444,10 +458,6 @@ export function generateConfigFileIfNeeded(
         Boolean(resourceSummaryMemoryOnly)
     );
 
-    if (!hasAnyConfig) {
-        return false;
-    }
-
     let configData: Record<string, any> = {};
     if (uiState.configFile && fs.existsSync(uiState.configFile)) {
         try {
@@ -455,6 +465,13 @@ export function generateConfigFileIfNeeded(
         } catch {
             configData = {};
         }
+    }
+    // The user's file can enable dynamic analysis on its own: ctrace would
+    // still start the missing analyzer, so the run gets a copy without it.
+    const dropsRuntimeAnalyzer = uiState.skipRuntimeAnalyzer === true && removeRuntimeAnalyzer(configData);
+
+    if (!hasAnyConfig && !dropsRuntimeAnalyzer) {
+        return false;
     }
     if (!configData.stack_analyzer) {
         configData.stack_analyzer = {};

@@ -108,7 +108,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
             }
-            vscode.commands.executeCommand(data.command, data.params);
+            const fromSidebar = typeof data.params === 'object' && data.params !== null && !Array.isArray(data.params)
+                ? { ...data.params, fromSidebar: true }
+                : data.params;
+            vscode.commands.executeCommand(data.command, fromSidebar);
             break;
         }
         case "ignore-finding": {

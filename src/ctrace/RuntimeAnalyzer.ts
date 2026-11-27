@@ -55,7 +55,8 @@ export async function isRuntimeAnalyzerAvailable(
 }
 
 /** Whether these sidebar settings ask for dynamic analysis. */
-export function requestsDynamicAnalysis(uiState: { dynamicEnabled?: boolean; dynamicTools?: string[] }): boolean {
+export function requestsDynamicAnalysis(uiState: { dynamicEnabled?: boolean; dynamicTools?: unknown }): boolean {
+    // Like buildCtraceArgs: anything but an array means the default selection.
     return uiState.dynamicEnabled !== false
-        && (uiState.dynamicTools === undefined || uiState.dynamicTools.includes(RUNTIME_ANALYZER));
+        && (!Array.isArray(uiState.dynamicTools) || uiState.dynamicTools.includes(RUNTIME_ANALYZER));
 }
