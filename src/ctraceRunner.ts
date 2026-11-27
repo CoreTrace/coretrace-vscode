@@ -361,14 +361,6 @@ function toInternalPath(p: string): string {
     return normalized.replace(/^([a-zA-Z]):(?=\/|$)/, (_match, drive: string) => `/mnt/${drive.toLowerCase()}`);
 }
 
-/**
- * Writes the JSON config that carries the settings ctrace has no CLI flag
- * for (include directories, macros, filters…).
- *
- * @returns false when no setting needs a config file, true once it is written.
- * @throws ScanSetupError when it cannot be written: running without it would
- *         silently drop the requested settings.
- */
 /** Turns the runtime analyzer off in a ctrace config; returns whether it was on. */
 function removeRuntimeAnalyzer(configData: Record<string, any>): boolean {
     const analysis = configData.analysis;
@@ -381,6 +373,14 @@ function removeRuntimeAnalyzer(configData: Record<string, any>): boolean {
     return true;
 }
 
+/**
+ * Writes the JSON config that carries the settings ctrace has no CLI flag
+ * for (include directories, macros, filters…).
+ *
+ * @returns false when no setting needs a config file, true once it is written.
+ * @throws ScanSetupError when it cannot be written: running without it would
+ *         silently drop the requested settings.
+ */
 export function generateConfigFileIfNeeded(
     configPath: string,
     uiState: CtraceUIState,
