@@ -3,7 +3,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { effectiveCAnalyzers, generateConfigFileIfNeeded, readCtraceConfig } from '../ctraceRunner';
+import { effectiveAnalyzers, generateConfigFileIfNeeded, readCtraceConfig } from '../ctraceRunner';
 import { BUNDLED_RUNTIME_ANALYZER, isRuntimeAnalyzerAvailable, RUNTIME_ANALYZER } from '../ctrace/RuntimeAnalyzer';
 
 suite('Runtime analyzer detection Test Suite', () => {
@@ -18,7 +18,7 @@ suite('Runtime analyzer detection Test Suite', () => {
         code: cp.spawnSync('/bin/sh', ['-c', command], { env: { PATH: pathDir() } }).status ?? 1,
     });
     const available = (configured?: string) =>
-        isRuntimeAnalyzerAvailable({ binary: ctrace(), distro: null }, configured, shell);
+        isRuntimeAnalyzerAvailable({ binary: ctrace(), distro: null }, configured, work, shell);
     const tool = (file: string, mode = 0o755) => {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, '#!/bin/sh\n', { mode });
@@ -61,35 +61,53 @@ suite('Runtime analyzer detection Test Suite', () => {
         assert.strictEqual(await available('my-analyzer'), false);
         tool(path.join(pathDir(), 'my-analyzer'));
         assert.strictEqual(await available('my-analyzer'), true);
+        tool(path.join(pathDir(), 'test'));
+        assert.strictEqual(await available('test'), true, 'ctrace resolves a configured executable even if sh has a builtin of that name');
+    });
+
+    test('relative paths use the tools directory and fall back to the analysis cwd', async function () {
+        posixOnly.call(this);
+        const previousHome = process.env.HOME;
+        process.env.HOME = work;
+        try {
+            const target = { binary: ctrace(), distro: null };
+            tool(path.join(work, 'fallback-tool'));
+            assert.ok(await isRuntimeAnalyzerAvailable(target, './fallback-tool', work));
+            tool(path.join(work, '.coretrace', 'tools', 'bin', 'relative-tool'));
+            assert.ok(await isRuntimeAnalyzerAvailable(target, './bin/relative-tool', work));
+            assert.strictEqual(await isRuntimeAnalyzerAvailable(target, './fallback-tool', work), false);
+        } finally {
+            if (previousHome === undefined) { delete process.env.HOME; } else { process.env.HOME = previousHome; }
+        }
     });
 
     test('a shell that cannot start means no dynamic analysis', async () => {
         const failing = async () => { throw new Error('no shell'); };
-        assert.strictEqual(await isRuntimeAnalyzerAvailable({ binary: ctrace(), distro: null }, undefined, failing), false);
+        assert.strictEqual(await isRuntimeAnalyzerAvailable({ binary: ctrace(), distro: null }, undefined, work, failing), false);
     });
 
     test('the configured path is read from the ctrace configuration file', () => {
         const config = path.join(work, 'config.json');
-        const configuredRuntimeAnalyzer = (file?: string) => effectiveCAnalyzers({}, readCtraceConfig(file)).runtimePath;
+        const configuredRuntimeAnalyzer = (file?: string) => effectiveAnalyzers({}, readCtraceConfig(file)).runtimePath;
         assert.strictEqual(configuredRuntimeAnalyzer(undefined), undefined);
-        assert.strictEqual(configuredRuntimeAnalyzer(config), undefined);
+        assert.throws(() => configuredRuntimeAnalyzer(config), /Could not read ctrace configuration/);
         fs.writeFileSync(config, JSON.stringify({ tools: { 'coretrace-runtime-analyzer': { path: '/opt/rt/bin/runtime-analyzer' } } }));
         assert.strictEqual(configuredRuntimeAnalyzer(config), '/opt/rt/bin/runtime-analyzer');
         fs.writeFileSync(config, '{ not json');
-        assert.strictEqual(configuredRuntimeAnalyzer(config), undefined);
+        assert.throws(() => configuredRuntimeAnalyzer(config), /Could not read ctrace configuration/);
     });
 
     test('preflight uses the tool flags and config precedence that ctrace uses', () => {
         const off = { staticEnabled: false, dynamicEnabled: false };
-        assert.strictEqual(effectiveCAnalyzers({}, {}).runtime, true);
-        assert.strictEqual(effectiveCAnalyzers({ dynamicTools: [] }, {}).runtime, false);
-        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { dynamic_analysis: true } }).runtime, true);
-        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { static_analysis: true } }).static, true);
+        assert.strictEqual(effectiveAnalyzers({}, {}).runtime, true);
+        assert.strictEqual(effectiveAnalyzers({ dynamicTools: [] }, {}).runtime, false);
+        assert.strictEqual(effectiveAnalyzers(off, { analysis: { dynamic_analysis: true } }).runtime, true);
+        assert.strictEqual(effectiveAnalyzers(off, { analysis: { static_analysis: true } }).static, true);
         const config = { invoke: RUNTIME_ANALYZER };
-        assert.strictEqual(effectiveCAnalyzers(off, config).runtime, true);
-        assert.strictEqual(effectiveCAnalyzers({ ...off, invokedTools: ['cppcheck'] }, config).runtime, false);
-        assert.strictEqual(effectiveCAnalyzers(off, { ...config, analysis: { invoke: [] } }).runtime, false);
-        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { invoke: 'coretrace-python-analyzer' } }).static, false);
+        assert.strictEqual(effectiveAnalyzers(off, config).runtime, true);
+        assert.strictEqual(effectiveAnalyzers({ ...off, invokedTools: ['cppcheck'] }, config).runtime, false);
+        assert.strictEqual(effectiveAnalyzers(off, { ...config, analysis: { invoke: [] } }).runtime, false);
+        assert.strictEqual(effectiveAnalyzers(off, { analysis: { invoke: 'coretrace-python-analyzer' } }).static, false);
     });
 
     test('a run without the runtime analyzer turns it off in a copy of the user config', () => {

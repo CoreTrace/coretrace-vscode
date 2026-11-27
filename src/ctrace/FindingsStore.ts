@@ -5,6 +5,7 @@ const STORAGE_KEY = 'coretrace.latestFindings.v1';
 
 export interface FindingsSnapshot {
     savedAt: number;
+    coverageNote?: string;
     report: SarifLog;
 }
 
@@ -18,7 +19,7 @@ export class FindingsStore {
             ? value : null;
     }
 
-    public async save(report: SarifLog, savedAt = Date.now()): Promise<void> {
+    public async save(report: SarifLog, savedAt = Date.now(), coverageNote?: string): Promise<void> {
         const results: SarifResult[] = (report.runs ?? []).flatMap(run => run.results ?? []).map(result => {
             const location = result.locations?.[0]?.physicalLocation;
             const props = result.properties;
@@ -41,7 +42,7 @@ export class FindingsStore {
             };
         });
         await this.state.update(STORAGE_KEY, {
-            savedAt,
+            savedAt, coverageNote,
             report: {
                 version: '2.1.0',
                 runs: [{ tool: { driver: { name: 'CoreTrace' } }, results }],

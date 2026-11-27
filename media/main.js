@@ -5,6 +5,7 @@
     const runBtn = document.getElementById('run-btn');
     const runLabel = document.getElementById('run-label');
     const resultsContainer = document.getElementById('results-container');
+    const coverageNote = document.getElementById('coverage-note');
     const vulnList = document.getElementById('vuln-list');
     const vulnCount = document.getElementById('vuln-count');
     const findingsSearch = document.getElementById('findings-search');
@@ -89,6 +90,7 @@
     let settingsSearchRestore = null;
     let analysisProfile = 'full';
     let findings = [];
+    let appliedDynamicSetting = persistedState.appliedDynamicSetting;
     let ignoredCount = 0;
     let currentStatus = 'ready';
     let isRunning = false;
@@ -402,6 +404,7 @@
 
     function saveUiState() {
         vscode.setState({
+            appliedDynamicSetting,
             uiState: readCtraceUiState(),
             scanWorkspace,
             knownStaticTools: [...document.querySelectorAll('.static-tool')].map(tool => tool.value),
@@ -665,7 +668,7 @@
                 setRunning(true);
                 break;
             case 'analysis-result':
-                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt, msg.refresh === true);
+                handleAnalysisResult(msg.data, msg.restored === true, msg.savedAt, msg.refresh === true, msg.coverageNote);
                 break;
             case 'clear-results':
                 clearDisplayedResults();
@@ -692,9 +695,13 @@
                 }
                 break;
             case 'set-dynamic-analysis':
-                document.querySelectorAll('.dynamic-tool').forEach(tool => { tool.checked = msg.enabled === true; });
-                updateAnalysisModeStyles();
-                saveUiState();
+                if (msg.id !== appliedDynamicSetting) {
+                    document.querySelectorAll('.dynamic-tool').forEach(tool => { tool.checked = msg.enabled === true; });
+                    updateAnalysisModeStyles();
+                    appliedDynamicSetting = msg.id;
+                    saveUiState();
+                }
+                vscode.postMessage({ type: 'dynamic-setting-saved', id: msg.id });
                 break;
             case 'compile-commands-selected':
                 setValue('compile-commands-path', msg.path || '');
@@ -780,12 +787,16 @@
         }
     }
 
-    function handleAnalysisResult(sarif, restored = false, savedAt, refresh = false) {
+    function handleAnalysisResult(sarif, restored = false, savedAt, refresh = false, omittedCoverage) {
+        coverageNote.textContent = omittedCoverage || '';
+        coverageNote.hidden = !omittedCoverage;
         // A refresh only re-applies the ignore list: keep the current status.
         if (!refresh) {
             setRunning(false);
             const savedLabel = Number.isFinite(savedAt) ? new Date(savedAt).toLocaleString() : 'Saved results';
-            setStatus(restored ? 'Last analysis' : 'Analysis complete', restored ? savedLabel : 'Findings are shown below', 'success');
+            const title = omittedCoverage ? 'Partial analysis' : 'Analysis complete';
+            setStatus(restored ? (omittedCoverage ? 'Last partial analysis' : 'Last analysis') : title,
+                restored ? savedLabel : 'Findings are shown below', omittedCoverage ? 'warning' : 'success');
             setProgress(100);
         }
 
@@ -823,18 +834,14 @@
         updateSummary(findings);
         renderFilteredFindings();
 
-        if (count === 0 && vulnList) {
-            vulnList.innerHTML = '<li class="info-item">No issues detected for the selected scope.</li>';
-            appendIgnoredNotice();
-            if (typeof lucide !== 'undefined') { lucide.createIcons(); }
-        }
-
         if (tabVulnBadge) {
             tabVulnBadge.textContent = String(count);
         }
     }
 
     function clearDisplayedResults() {
+        coverageNote.hidden = true;
+        coverageNote.textContent = '';
         findings = [];
         stackModel = null;
         stackExpanded = new Set();
@@ -1296,7 +1303,14 @@
         if (findings.length > 0 && filtered.length === 0 && vulnList) {
             vulnList.innerHTML = '<li class="info-item">No findings match the current filters.</li>';
         }
-        if (findings.length > 0) { appendIgnoredNotice(); }
+        if (findings.length === 0) {
+            const message = coverageNote.hidden ? 'No issues detected for the selected scope.' : 'No issues detected by the tools that ran.';
+            const item = document.createElement('li');
+            item.className = 'info-item';
+            item.textContent = message;
+            vulnList.appendChild(item);
+        }
+        appendIgnoredNotice();
     }
 
     function appendIgnoredNotice() {

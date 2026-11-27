@@ -78,8 +78,7 @@ suite('Run Analysis on Python files', function () {
     test('a workspace scan covers C and Python files and skips virtual environments', async () => {
         await vscode.commands.executeCommand('ctrace.clearAnalysisCache');
         await vscode.commands.executeCommand('ctrace.runWorkspaceAnalysis', {
-            // No C tool selected: the C dependency check would wait for an answer.
-            uiState: { staticTools: ['coretrace-python-analyzer'], dynamicEnabled: false },
+            uiState: { staticTools: ['coretrace-python-analyzer', 'ctrace_stack_analyzer'], dynamicEnabled: false },
         });
         if (!posix) {
             assert.ok(launched.length >= 2);

@@ -1,7 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as cp from 'child_process';
+import * as os from 'os';
 import * as path from 'path';
-import { parseAndValidateParams, isWslAvailable, buildCommand, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
+import { parseAndValidateParams, isWslAvailable, buildCommand, executionTarget, pathInExecutionTarget, setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
 import { buildCtraceArgs, buildStackAnalyzerArgs, generateConfigFileIfNeeded, shellQuoteArgs } from '../ctraceRunner';
 import { cleanFunctionName } from '../utils/functionCleaner';
 
@@ -76,6 +78,45 @@ suite('CommandBuilder Test Suite', () => {
             );
         } finally {
             setMockWslAvailableForTesting(null);
+        }
+    });
+
+    test('a copied config and its command use the mount root of each WSL target', async function () {
+        if (process.platform !== 'win32') { this.skip(); }
+        const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ctrace-wsl-config-'));
+        const user = path.join(work, 'user.json');
+        fs.writeFileSync(user, JSON.stringify({ analysis: { dynamic: true }, files: { compile_commands: 'db.json' } }));
+        const child = cp as { execFileSync: typeof cp.execFileSync };
+        const exec = child.execFileSync;
+        child.execFileSync = ((file: string, args: string[]) => {
+            assert.strictEqual(file, 'wsl');
+            if (args.includes('-l')) { return '* Ubuntu Running 2\n  Debian Running 2'; }
+            if (args.includes('true')) { return ''; }
+            assert.ok(args.includes('--exec') && args.includes('wslpath'));
+            const root = args.includes('Debian') ? '/drives' : '/volumes';
+            return Buffer.from(root + '/' + path.win32.basename(args[args.length - 1]));
+        }) as typeof cp.execFileSync;
+        setMockWslAvailableForTesting(true);
+        try {
+            for (const [name, mount] of [['Debian', '/drives'], ['Ubuntu', '/volumes']]) {
+                const input = `\\\\wsl$\\${name}\\home\\main.c`;
+                const target = executionTarget('C:\\tools\\ctrace', input);
+                assert.strictEqual(target.distro, name === 'Ubuntu' ? null : name);
+                const generated = path.join(work, name + '.json');
+                assert.ok(generateConfigFileIfNeeded(generated, { configFile: user, skipRuntimeAnalyzer: true },
+                    undefined, undefined, undefined, file => pathInExecutionTarget(file, target)));
+                assert.strictEqual(JSON.parse(fs.readFileSync(generated, 'utf8')).files.compile_commands, mount + '/db.json');
+                const built = await buildCommand('C:\\tools\\ctrace', input, shellQuoteArgs(['--config=' + generated]), false, target);
+                try {
+                    const script = fs.readFileSync(built.tempFiles[0], 'utf8');
+                    assert.ok(script.includes(`'--config=${mount}/${name}.json'`), script);
+                    assert.ok(script.includes("--input '/home/main.c'"), script);
+                } finally { for (const file of built.tempFiles) { fs.unlinkSync(file); } }
+            }
+        } finally {
+            child.execFileSync = exec;
+            setMockWslAvailableForTesting(null);
+            fs.rmSync(work, { recursive: true, force: true });
         }
     });
 

@@ -93,20 +93,19 @@ export function sourceLanguage(filePath: string): SourceLanguage | undefined {
 
 /** Brace list of the extensions a workspace scan looks for, e.g. "{c,cpp,py}". */
 export function workspaceSourceExtensions(languages: SourceLanguage[]): string {
-    return `{${languages.flatMap(language => SOURCE_EXTENSIONS[language]).map(ext => ext.slice(1)).join(',')}}`;
+    const extensions = languages.flatMap(language => SOURCE_EXTENSIONS[language]).map(ext => ext.slice(1));
+    return extensions.length === 1 ? extensions[0] : `{${extensions.join(',')}}`;
 }
 
 /** Python environments and caches: third-party code, not the user's. */
 export const PYTHON_EXCLUDED_DIRS = ['.venv', 'venv', '__pycache__', 'site-packages', '.tox', '.nox', '.mypy_cache', '.pytest_cache'];
 
 /**
- * Whether a run with these settings analyses files of `language`. C and C++
- * files are always sent, as before; Python files need the Python analyzer.
+ * Whether any selected analyzer can process files of this language.
  */
-export function analysesLanguage(uiState: CtraceUIState, language: SourceLanguage): boolean {
-    if (language === 'c') { return true; }
-    return uiState.staticEnabled !== false
-        && (uiState.staticTools === undefined || uiState.staticTools.includes(PYTHON_ANALYZER));
+export function analysesLanguage(uiState: CtraceUIState, language: SourceLanguage, config = {}): boolean {
+    const tools = effectiveAnalyzers(uiState, config, language);
+    return tools.static || (language === 'c' && tools.runtime);
 }
 
 function selectedTools(uiState: CtraceUIState, language: SourceLanguage) {
@@ -365,10 +364,11 @@ function toInternalPath(p: string): string {
 export function readCtraceConfig(file?: string): Record<string, any> {
     if (!file) { return {}; }
     try {
-        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-    } catch {
-        return {};
+        const data = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+        if (!data || typeof data !== 'object' || Array.isArray(data)) { throw new Error('expected a JSON object'); }
+        return data;
+    } catch (e) {
+        throw new ScanSetupError(`Could not read ctrace configuration ${file}: ${(e as Error).message}`);
     }
 }
 
@@ -378,17 +378,20 @@ function invokedList(value: unknown): unknown[] {
 }
 
 /** ctrace applies CLI flags over the matching config fields, including the whole invoke list. */
-export function effectiveCAnalyzers(uiState: CtraceUIState, config: Record<string, any>) {
-    const { allStatic, allDynamic, invokedTools } = selectedTools(uiState, 'c');
+export function effectiveAnalyzers(uiState: CtraceUIState, config: Record<string, any>, language: SourceLanguage = 'c') {
+    const { allStatic, allDynamic, invokedTools } = selectedTools(uiState, language);
     const analysis = config.analysis ?? {};
     const invoked = invokedTools.length ? invokedTools : invokedList(analysis.invoke ?? config.invoke);
     const configDynamic = (analysis.dynamic !== undefined ? analysis.dynamic : analysis.dynamic_analysis) === true || invoked.includes(RUNTIME_ANALYZER);
+    const runtimePath = config.tools?.[RUNTIME_ANALYZER]?.path;
+    const staticEnabled = allStatic || (analysis.static !== undefined ? analysis.static : analysis.static_analysis) === true;
     return {
         runtime: allDynamic || configDynamic,
         configDynamic,
-        runtimePath: cleanValue(config.tools?.[RUNTIME_ANALYZER]?.path),
-        static: allStatic || (analysis.static !== undefined ? analysis.static : analysis.static_analysis) === true
-            || invoked.some(tool => tool === 'coretrace-concurrency-analyzer' || (typeof tool === 'string' && TOOLS_BY_LANGUAGE.c.static.includes(tool))),
+        runtimePath: typeof runtimePath === 'string' && runtimePath.length ? runtimePath : undefined,
+        stack: staticEnabled || invoked.includes('ctrace_stack_analyzer'),
+        static: staticEnabled
+            || invoked.some(tool => (language === 'c' && tool === 'coretrace-concurrency-analyzer') || (typeof tool === 'string' && TOOLS_BY_LANGUAGE[language].static.includes(tool))),
     };
 }
 
@@ -412,8 +415,7 @@ function removeRuntimeAnalyzer(config: Record<string, any>): boolean {
 
 /** Only these CLI config fields resolve against the JSON file's directory. */
 function preserveConfigPaths(config: Record<string, any>, configFile: string): void {
-    const hostPath = path.resolve(configFile);
-    const base = path.posix.dirname(process.platform === 'win32' ? toInternalPath(hostPath) : hostPath);
+    const base = path.posix.dirname(configFile);
     const resolve = (value: unknown) => typeof value === 'string' && value && !path.posix.isAbsolute(value)
         ? path.posix.join(base, value) : value;
     for (const section of [config, config.files]) {
@@ -443,14 +445,15 @@ export function generateConfigFileIfNeeded(
     uiState: CtraceUIState,
     workspaceRoot?: string,
     vscodeConfig?: vscode.WorkspaceConfiguration,
-    userConfig = readCtraceConfig(uiState.configFile)
+    userConfig = readCtraceConfig(uiState.configFile),
+    targetPath: (file: string) => string = file => path.win32.isAbsolute(file) && !path.posix.isAbsolute(file) ? toInternalPath(file) : file
 ): boolean {
     const parseList = (val?: string) => {
         if (!val || typeof val !== 'string') { return []; }
         return val.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
     };
 
-    const internalRoot = workspaceRoot ? toInternalPath(workspaceRoot) : undefined;
+    const internalRoot = workspaceRoot ? targetPath(workspaceRoot) : undefined;
     const rawIncludes = parseList(uiState.extraIncludes).map(s => s.replace(/^-I/, '').trim()).filter(Boolean);
     
     const includeDirs: string[] = [];
@@ -462,7 +465,7 @@ export function generateConfigFileIfNeeded(
         if (internalRoot && !isAbsolute) {
             resolved = path.posix.join(internalRoot, item.replace(/\\/g, '/'));
         }
-        const internal = toInternalPath(resolved);
+        const internal = isAbsolute ? targetPath(resolved) : resolved;
         if (!includeDirs.includes(internal)) {
             includeDirs.push(internal);
             extraArgs.push(`-I${internal}`);
@@ -484,7 +487,7 @@ export function generateConfigFileIfNeeded(
     const resolveDir = (dir: string): string => {
         const isAbsolute = path.isAbsolute(dir) || dir.startsWith('/') || /^[a-zA-Z]:/.test(dir);
         const resolved = internalRoot && !isAbsolute ? path.posix.join(internalRoot, dir.replace(/\\/g, '/')) : dir;
-        return toInternalPath(resolved).replace(/(?<=.)\/+$/, '');
+        return (isAbsolute ? targetPath(resolved) : resolved).replace(/(?<=.)\/+$/, '');
     };
     const onlyDirs = parseList(uiState.onlyDir).map(resolveDir);
     const excludeDirs = parseList(uiState.excludeDir).map(resolveDir);
@@ -524,7 +527,7 @@ export function generateConfigFileIfNeeded(
     if (!hasAnyConfig && !dropsRuntimeAnalyzer) {
         return false;
     }
-    if (uiState.configFile) { preserveConfigPaths(configData, uiState.configFile); }
+    if (uiState.configFile) { preserveConfigPaths(configData, targetPath(path.resolve(uiState.configFile))); }
     if (hasAnyConfig && !configData.stack_analyzer) {
         configData.stack_analyzer = configData['stack-analyzer'] ?? configData.tools?.ctrace_stack_analyzer ?? configData.tools?.stack_analyzer ?? {};
     }

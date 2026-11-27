@@ -61,7 +61,7 @@ function toWslPath(winPath: string, distroName: string | null = null): string {
     try {
         const args = [
             ...(distroName ? ['-d', distroName] : []),
-            'wslpath', '-u', normalized,
+            '--exec', 'wslpath', '-u', normalized,
         ];
         return cp.execFileSync('wsl', args, { timeout: 5000 }).toString().trim();
     } catch {
@@ -85,15 +85,21 @@ export async function buildCommand(
     ctracePath: string,
     inputFilePath: string,
     params: string,
-    compileCommands = false
+    compileCommands = false,
+    target?: ExecutionTarget
 ): Promise<BuiltCommand> {
     if (process.platform !== 'win32') {
         return buildNativeCommand(ctracePath, inputFilePath, params, compileCommands);
     }
-    return await buildWindowsCommand(ctracePath, inputFilePath, params, compileCommands);
+    return await buildWindowsCommand(ctracePath, inputFilePath, params, compileCommands, target);
 }
 
 // ─── Linux / macOS ───────────────────────────────────────────────────────────
+
+export function enterToolsDirectory(): string {
+    const dir = process.platform === 'win32' ? '"$HOME/.coretrace/tools"' : shellEscapeArg(path.join(os.homedir(), '.coretrace', 'tools'));
+    return `cd ${dir} 2>/dev/null || true; `;
+}
 
 function buildNativeCommand(
     ctracePath: string,
@@ -109,8 +115,7 @@ function buildNativeCommand(
     const toolsDir = path.posix.join(os.homedir().replace(/\\/g, '/'), '.coretrace', 'tools');
     const q = (p: string) => shellEscapeArg(`${toolsDir}/${p}`);
     const envExports = `export CORETRACE_CPPCHECK_BIN='/opt/homebrew/bin/cppcheck' CORETRACE_IKOS_BIN=${q('ikos/src/ikos-build/bin/ikos')} CORETRACE_TSCANCODE_BIN=${q('tscancode/src/tscancode/trunk/tscancode')} CORETRACE_FLAWFINDER_SCRIPT=${q('flawfinder/src/flawfinder-build/flawfinder.py')} && `;
-    const cdTools = `cd ${shellEscapeArg(toolsDir)} 2>/dev/null || true; `;
-    const command = `${cdTools}${envExports}chmod +x ${bin} && ${bin} --input ${input}${extraArgs} ${params}`;
+    const command = `${enterToolsDirectory()}${envExports}chmod +x ${bin} && ${bin} --input ${input}${extraArgs} ${params}`;
     return { command, tempFiles: [] };
 }
 
@@ -167,7 +172,8 @@ async function buildWindowsCommand(
     ctracePath: string,
     inputFilePath: string,
     params: string,
-    compileCommands = false
+    compileCommands: boolean,
+    target = executionTarget(ctracePath, inputFilePath)
 ): Promise<BuiltCommand> {
     if (!isWslAvailable()) {
         throw new Error('Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows. Please install WSL (run "wsl --install" or visit https://learn.microsoft.com/windows/wsl/install).');
@@ -175,15 +181,9 @@ async function buildWindowsCommand(
 
     const tempFiles: string[] = [];
 
-    const binWsl = parseWslUNC(ctracePath);
-    const inputWsl = parseWslUNC(inputFilePath);
-    const detectedDistro = binWsl?.distro ?? inputWsl?.distro;
-
-    if (detectedDistro) {
-        const result = trySmartDistroExecution(ctracePath, inputFilePath, params, detectedDistro, binWsl, inputWsl, compileCommands);
-        if (result) {
-            return await writeWslScript(result.script, result.distro, tempFiles);
-        }
+    if (target.uncDistro) {
+        const script = buildDistroScript(ctracePath, inputFilePath, params, target, compileCommands);
+        return await writeWslScript(script, target.distro, tempFiles);
     }
 
     // Fallback: copy files to Windows temp folder, run via default WSL distro
@@ -231,77 +231,67 @@ export function wslDistroOf(p: string): string | undefined {
     return parseWslUNC(p)?.distro;
 }
 
+export interface ExecutionTarget {
+    binary: string;
+    distro: string | null;
+    /** Includes the default distro's name when the command uses its UNC path. */
+    uncDistro?: string;
+}
+
+export function pathInExecutionTarget(file: string, target: ExecutionTarget): string {
+    if (process.platform !== 'win32') { return file; }
+    const unc = parseWslUNC(file);
+    if (unc && unc.distro.toLowerCase() === target.uncDistro?.toLowerCase()) { return unc.internalPath; }
+    if (!unc && path.posix.isAbsolute(file)) { return file; }
+    return toWslPath(file, target.distro);
+}
+
 /**
  * Where buildCommand runs ctrace for this input: the WSL distribution (null:
  * the default one, or the host off Windows) and the path of ctrace there.
  */
-export function executionTarget(ctracePath: string, inputFilePath: string): { distro: string | null; binary: string } {
+export function executionTarget(ctracePath: string, inputFilePath: string): ExecutionTarget {
     if (process.platform !== 'win32') { return { distro: null, binary: ctracePath }; }
     const binWsl = parseWslUNC(ctracePath);
     const detectedDistro = binWsl?.distro ?? parseWslUNC(inputFilePath)?.distro;
     const target = detectedDistro ? matchWslDistro(detectedDistro) : null;
     if (target) {
         const binary = binWsl && binWsl.distro === detectedDistro ? binWsl.internalPath : toWslPath(ctracePath, target.distro);
-        return { distro: target.distro, binary };
+        return { distro: target.distro, binary, uncDistro: detectedDistro };
     }
     // The fallback runs a copy of ctrace from /tmp, with no release next to it.
     return { distro: null, binary: '/tmp/ctrace' };
 }
 
-function trySmartDistroExecution(
+function buildDistroScript(
     ctracePath: string,
     inputFilePath: string,
     params: string,
-    detectedDistro: string,
-    binWsl: { distro: string; internalPath: string } | null,
-    inputWsl: { distro: string; internalPath: string } | null,
+    target: ExecutionTarget,
     compileCommands: boolean
-): { script: string; distro: string | null } | null {
-    try {
-        const target = matchWslDistro(detectedDistro);
-        if (!target) { return null; }
-        const isDefault = target.distro === null;
-        const safeDistroName = target.distro;
-
-        const resolvePath = (origPath: string, wsl: { distro: string; internalPath: string } | null): string => {
-            if (wsl?.distro === detectedDistro) { return wsl.internalPath; }
-            return toWslPath(origPath, isDefault ? null : safeDistroName);
-        };
-
-        const finalBin = binWsl?.distro === detectedDistro ? binWsl.internalPath : resolvePath(ctracePath, binWsl);
-        const finalInput = inputWsl?.distro === detectedDistro ? inputWsl.internalPath : resolvePath(inputFilePath, inputWsl);
-
-        const validatedParamsTokens = parseAndValidateParams(params).map(token => {
-            const eqIndex = token.indexOf('=');
-            if (eqIndex > 0) {
-                const key = token.substring(0, eqIndex);
-                const val = token.substring(eqIndex + 1);
-                const wsl = parseWslUNC(val);
-                if (wsl || val.match(/^[a-zA-Z]:[\\/]/)) {
-                    const finalVal = wsl?.distro === detectedDistro ? wsl.internalPath : resolvePath(val, wsl);
-                    return `${key}=${finalVal}`;
-                }
-            }
-            return token;
-        });
-        const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
-
-        const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(finalInput)}` : '';
-
-        const libDir = getLibDirForBinary(ctracePath);
-        let libEnv = '';
-        if (libDir) {
-            const wslLib = binWsl?.distro === detectedDistro
-                ? path.posix.join(path.posix.dirname(binWsl.internalPath), '..', 'lib')
-                : resolvePath(libDir, null);
-            libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
+): string {
+    const finalInput = pathInExecutionTarget(inputFilePath, target);
+    const validatedParamsTokens = parseAndValidateParams(params).map(token => {
+        const eqIndex = token.indexOf('=');
+        if (eqIndex < 0) { return token; }
+        const val = token.slice(eqIndex + 1);
+        if (parseWslUNC(val) || /^[a-zA-Z]:[\\/]/.test(val)) {
+            return token.slice(0, eqIndex + 1) + pathInExecutionTarget(val, target);
         }
+        return token;
+    });
+    const validatedParams = validatedParamsTokens.map(shellEscapeArg).join(' ');
 
-        const script = `${wslToolEnvironment()}${libEnv}chmod +x ${shellEscapeArg(finalBin)} && ${shellEscapeArg(finalBin)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}`;
-        return { script, distro: isDefault ? null : safeDistroName };
-    } catch {
-        return null;
+    const extraArgs = compileCommands ? ` --compile-commands ${shellEscapeArg(finalInput)}` : '';
+
+    const libDir = getLibDirForBinary(ctracePath);
+    let libEnv = '';
+    if (libDir) {
+        const wslLib = pathInExecutionTarget(libDir, target);
+        libEnv = `export LD_LIBRARY_PATH=${shellEscapeArg(wslLib)}:"$LD_LIBRARY_PATH" && `;
     }
+
+    return `${wslToolEnvironment()}${libEnv}chmod +x ${shellEscapeArg(target.binary)} && ${shellEscapeArg(target.binary)} --input ${shellEscapeArg(finalInput)}${extraArgs} ${validatedParams}`;
 }
 
 /**
@@ -380,7 +370,7 @@ async function buildFallbackCommand(
 
 function wslToolEnvironment(): string {
     const toolsDir = '$HOME/.coretrace/tools';
-    return `cd "${toolsDir}" 2>/dev/null || true; export CORETRACE_CPPCHECK_BIN=/opt/homebrew/bin/cppcheck CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
+    return `${enterToolsDirectory()}export CORETRACE_CPPCHECK_BIN=/opt/homebrew/bin/cppcheck CORETRACE_IKOS_BIN="${toolsDir}/ikos/src/ikos-build/bin/ikos" CORETRACE_TSCANCODE_BIN="${toolsDir}/tscancode/src/tscancode/trunk/tscancode" CORETRACE_FLAWFINDER_SCRIPT="${toolsDir}/flawfinder/src/flawfinder-build/flawfinder.py" && `;
 }
 
 async function writeWslScript(script: string, distro: string | null, tempFiles: string[]): Promise<BuiltCommand> {
