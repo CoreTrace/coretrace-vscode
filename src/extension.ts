@@ -330,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (firstCFile && requestsDynamicAnalysis(effectiveUiState)
                 && !(await isRuntimeAnalyzerAvailable(executionTarget(ctracePath, firstCFile), configuredRuntimeAnalyzer(effectiveUiState.configFile)))) {
                 effectiveUiState = { ...effectiveUiState, dynamicEnabled: false };
-                const cArgs = buildCtraceArgs(effectiveUiState, ctraceConfig, 'c');
+                const cArgs = buildCtraceArgs({ ...effectiveUiState, reportFile: '<report>' }, ctraceConfig, 'c');
                 if (!cArgs.some(arg => arg === '--static' || arg === '--dyn' || arg.startsWith('--invoke'))) {
                     // Nothing left to run: ctrace would report a clean result without checking anything.
                     const message = 'No analyzer to run: dynamic analysis needs coretrace-runtime-analyzer, which this ctrace cannot find '
