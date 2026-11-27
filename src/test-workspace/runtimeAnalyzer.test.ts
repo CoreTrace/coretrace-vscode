@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import * as AnalysisRunner from '../ctrace/AnalysisRunner';
 import * as BinaryUpdater from '../ctrace/BinaryUpdater';
 import { setMockWslAvailableForTesting } from '../ctrace/CommandBuilder';
-import { bundledRuntimeAnalyzer } from '../ctrace/RuntimeAnalyzer';
+import { BUNDLED_RUNTIME_ANALYZER } from '../ctrace/RuntimeAnalyzer';
 import { setScanDirectoryForTesting } from '../ctraceRunner';
 
 /** Run Analysis with dynamic analysis requested, with and without the runtime analyzer. */
@@ -20,6 +20,7 @@ suite('Run Analysis and the runtime analyzer', function () {
     let work = '';
     let fakeBinary = '';
     let launched: string[] = [];
+    const originalPath = process.env.PATH;
 
     const posix = process.platform !== 'win32';
     const run = (uiState: object) => vscode.commands.executeCommand('ctrace.runAnalysis', {
@@ -40,12 +41,18 @@ suite('Run Analysis and the runtime analyzer', function () {
             launched.push(command);
             return { stdout: '', stderr: '', exitCode: 0 };
         };
+        // Only sh on PATH: a runtime analyzer installed on this machine must not count.
+        const pathDir = path.join(work, 'path');
+        fs.mkdirSync(pathDir);
+        fs.symlinkSync('/bin/sh', path.join(pathDir, 'sh'));
+        process.env.PATH = pathDir;
         setMockWslAvailableForTesting(true);
         setScanDirectoryForTesting(path.join(work, 'scan'));
         await vscode.extensions.getExtension('CoreTrace.coretrace')!.activate();
     });
 
     suiteTeardown(() => {
+        process.env.PATH = originalPath;
         runner.runCommand = originalRunCommand;
         updater.ensureBinary = originalEnsureBinary;
         setMockWslAvailableForTesting(null);
@@ -57,16 +64,22 @@ suite('Run Analysis and the runtime analyzer', function () {
 
     test('without the runtime analyzer, the run goes on without --dyn', async function () {
         if (!posix) { this.skip(); }
-        await run(dynamicOnly);
+        await run({ ...dynamicOnly, staticEnabled: true, staticTools: ['ctrace_stack_analyzer'] });
         assert.ok(sarifRun(), 'the analysis must still run');
         assert.ok(!sarifRun().includes("'--dyn'"), sarifRun());
     });
 
+    test('without the runtime analyzer and with the static tools off, nothing runs', async function () {
+        if (!posix) { this.skip(); }
+        await run(dynamicOnly);
+        assert.strictEqual(sarifRun(), '', 'a run with no tool would report a clean result');
+    });
+
     test('with the runtime analyzer of the release, --dyn is passed', async function () {
         if (!posix) { this.skip(); }
-        const bundled = bundledRuntimeAnalyzer(fakeBinary);
+        const bundled = path.join(path.dirname(fakeBinary), BUNDLED_RUNTIME_ANALYZER);
         fs.mkdirSync(path.dirname(bundled), { recursive: true });
-        fs.writeFileSync(bundled, '');
+        fs.writeFileSync(bundled, '#!/bin/sh\n', { mode: 0o755 });
         try {
             await run(dynamicOnly);
             assert.ok(sarifRun().includes("'--dyn'"), sarifRun());

@@ -48,7 +48,7 @@ export function parseAndValidateParams(raw: string): string[] {
  * Wraps the value in single quotes and escapes any literal single quotes.
  * Only used for WSL execution paths that cannot avoid spawning a shell.
  */
-function shellEscapeArg(arg: string): string {
+export function shellEscapeArg(arg: string): string {
     return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
@@ -190,15 +190,11 @@ async function buildWindowsCommand(
     return await buildFallbackCommand(ctracePath, inputFilePath, params, tempFiles, compileCommands);
 }
 
-function trySmartDistroExecution(
-    ctracePath: string,
-    inputFilePath: string,
-    params: string,
-    detectedDistro: string,
-    binWsl: { distro: string; internalPath: string } | null,
-    inputWsl: { distro: string; internalPath: string } | null,
-    compileCommands: boolean
-): { script: string; distro: string | null } | null {
+/**
+ * The WSL distribution named in a `\\wsl$\<distro>\…` path, if reachable:
+ * `distro` is null for the default one, else its sanitized name.
+ */
+function matchWslDistro(detectedDistro: string): { distro: string | null } | null {
     try {
         const clean = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF\uFFFD]/g, '').trim();
         // execFileSync avoids spawning a shell (cmd.exe); encoding:'utf16le' is
@@ -222,10 +218,45 @@ function trySmartDistroExecution(
         }
 
         if (!matchedDistro) { return null; }
+        if (matchedDistro === defaultDistro) { return { distro: null }; }
+        const distro = resolveDistroName(matchedDistro);
+        return distro === null ? null : { distro };
+    } catch {
+        return null;
+    }
+}
 
-        const isDefault = matchedDistro === defaultDistro;
-        const safeDistroName = isDefault ? null : resolveDistroName(matchedDistro);
-        if (!isDefault && safeDistroName === null) { return null; }
+/**
+ * Where buildCommand runs ctrace for this input: the WSL distribution (null:
+ * the default one, or the host off Windows) and the path of ctrace there.
+ */
+export function executionTarget(ctracePath: string, inputFilePath: string): { distro: string | null; binary: string } {
+    if (process.platform !== 'win32') { return { distro: null, binary: ctracePath }; }
+    const binWsl = parseWslUNC(ctracePath);
+    const detectedDistro = binWsl?.distro ?? parseWslUNC(inputFilePath)?.distro;
+    const target = detectedDistro ? matchWslDistro(detectedDistro) : null;
+    if (target) {
+        const binary = binWsl && binWsl.distro === detectedDistro ? binWsl.internalPath : toWslPath(ctracePath, target.distro);
+        return { distro: target.distro, binary };
+    }
+    // The fallback runs a copy of ctrace from /tmp, with no release next to it.
+    return { distro: null, binary: '/tmp/ctrace' };
+}
+
+function trySmartDistroExecution(
+    ctracePath: string,
+    inputFilePath: string,
+    params: string,
+    detectedDistro: string,
+    binWsl: { distro: string; internalPath: string } | null,
+    inputWsl: { distro: string; internalPath: string } | null,
+    compileCommands: boolean
+): { script: string; distro: string | null } | null {
+    try {
+        const target = matchWslDistro(detectedDistro);
+        if (!target) { return null; }
+        const isDefault = target.distro === null;
+        const safeDistroName = target.distro;
 
         const resolvePath = (origPath: string, wsl: { distro: string; internalPath: string } | null): string => {
             if (wsl?.distro === detectedDistro) { return wsl.internalPath; }

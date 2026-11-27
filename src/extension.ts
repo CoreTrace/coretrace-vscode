@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
+import { buildCommand, executionTarget, isWslAvailable } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
@@ -27,7 +27,7 @@ import { FindingIgnoreList, relativeFindingPath, IGNORE_FILE_NAME } from './ctra
 import { IgnoreFindingCodeActionProvider } from './codelens/IgnoreFindingCodeActionProvider';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
-import { isRuntimeAnalyzerAvailable, requestsDynamicAnalysis } from './ctrace/RuntimeAnalyzer';
+import { configuredRuntimeAnalyzer, isRuntimeAnalyzerAvailable, requestsDynamicAnalysis } from './ctrace/RuntimeAnalyzer';
 import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
 import { FindingsStore } from './ctrace/FindingsStore';
 
@@ -325,10 +325,23 @@ export function activate(context: vscode.ExtensionContext) {
             // Dynamic analysis needs the runtime analyzer, which macOS releases
             // do not include. Without it, ctrace would only report a missing
             // command: run the static tools and say how to stop asking.
-            if (requestsDynamicAnalysis(effectiveUiState)
-                && filesToAnalyze.some(file => sourceLanguage(file) === 'c')
-                && !(await isRuntimeAnalyzerAvailable(ctracePath))) {
+            // shortcut: probes where the first C file runs; a workspace split across WSL distros gets that one's answer.
+            const firstCFile = filesToAnalyze.find(file => sourceLanguage(file) === 'c');
+            if (firstCFile && requestsDynamicAnalysis(effectiveUiState)
+                && !(await isRuntimeAnalyzerAvailable(executionTarget(ctracePath, firstCFile), configuredRuntimeAnalyzer(effectiveUiState.configFile)))) {
                 effectiveUiState = { ...effectiveUiState, dynamicEnabled: false };
+                const cArgs = buildCtraceArgs(effectiveUiState, ctraceConfig, 'c');
+                if (!cArgs.some(arg => arg === '--static' || arg === '--dyn' || arg.startsWith('--invoke'))) {
+                    // Nothing left to run: ctrace would report a clean result without checking anything.
+                    const message = 'No analyzer to run: dynamic analysis needs coretrace-runtime-analyzer, which this ctrace cannot find '
+                        + '(macOS releases do not include it), and the static tools are turned off.';
+                    output.appendLine(`[ctrace] ${message}`);
+                    vscode.window.showWarningMessage(message);
+                    isRunning = false;
+                    sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected', detail: message });
+                    sidebarProvider.postMessage({ type: 'analysis-done' });
+                    return;
+                }
                 const message = 'Dynamic analysis was skipped: this ctrace has no coretrace-runtime-analyzer '
                     + '(macOS releases do not include it). The static tools ran as usual.';
                 output.appendLine(`[ctrace] ${message}`);
