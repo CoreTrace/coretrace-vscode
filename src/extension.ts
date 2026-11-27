@@ -4,11 +4,11 @@ import * as path from 'path';
 
 import { SidebarProvider } from './SidebarProvider';
 import { locateBinary } from './ctrace/BinaryLocator';
-import { buildCommand, isWslAvailable } from './ctrace/CommandBuilder';
+import { buildCommand, executionTarget, ExecutionTarget, isWslAvailable, pathInExecutionTarget, wslDistroOf } from './ctrace/CommandBuilder';
 import { runCommand, DEFAULT_TIMEOUT_MS } from './ctrace/AnalysisRunner';
 import { parseSarifOutput } from './ctrace/SarifParser';
 import { updateDiagnostics, clearDiagnostics, getFindingForDiagnostic, FindingRef } from './ctrace/DiagnosticsManager';
-import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, prepareScanDirectory, shellQuoteArgs, CtraceUIState, sourceLanguage, analysesLanguage, workspaceSourceExtensions, PYTHON_EXCLUDED_DIRS, SourceLanguage } from './ctraceRunner';
+import { buildCtraceArgs, buildStackAnalyzerArgs, createReportPath, createConfigPath, generateConfigFileIfNeeded, effectiveAnalyzers, readCtraceConfig, prepareScanDirectory, shellQuoteArgs, CtraceUIState, sourceLanguage, analysesLanguage, workspaceSourceExtensions, PYTHON_EXCLUDED_DIRS, SourceLanguage } from './ctraceRunner';
 import { getFunctionSymbols, cleanFunctionName } from './utils/symbolExtractor';
 import { CtraceCodeLensProvider } from './codelens/CtraceCodeLensProvider';
 import { ensureBinary, isUpdatingBinary, setBinaryUpdateListener } from './ctrace/BinaryUpdater';
@@ -27,6 +27,7 @@ import { FindingIgnoreList, relativeFindingPath, IGNORE_FILE_NAME } from './ctra
 import { IgnoreFindingCodeActionProvider } from './codelens/IgnoreFindingCodeActionProvider';
 import { checkDependencies, installDependencies } from './ctrace/DependencyInstaller';
 import { StackManager } from './ctrace/StackManager';
+import { isRuntimeAnalyzerAvailable } from './ctrace/RuntimeAnalyzer';
 import { parseStackReport, mergeStackReports } from './ctrace/StackParser';
 import { FindingsStore } from './ctrace/FindingsStore';
 
@@ -38,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     const findingsStore = new FindingsStore(context.workspaceState);
-    const sidebarProvider = new SidebarProvider(context.extensionUri, findingsStore);
+    const sidebarProvider = new SidebarProvider(context.extensionUri, findingsStore, context.workspaceState);
     // Register the provider itself as a Disposable so its view-scoped
     // subscriptions are guaranteed to be released on extension deactivation,
     // even if `onDidDispose` is never fired by VS Code.
@@ -81,6 +82,7 @@ export function activate(context: vscode.ExtensionContext) {
     // SARIF of the latest analysis, per analysed file, so that ignoring a
     // finding can refresh the Problems panel and the sidebar without a rerun.
     let lastSarifByFile = new Map<string, any>();
+    let lastCoverageNote: string | undefined;
     let republishPending = false;
 
     async function republishFindings(): Promise<void> {
@@ -94,8 +96,8 @@ export function activate(context: vscode.ExtensionContext) {
                 updateDiagnostics(sarif, diagnosticCollection, fp, false, { isIgnored });
             }
             const merged = mergeSarifDocs([...lastSarifByFile.values()]);
-            await findingsStore.save(merged).catch(() => { /* best effort */ });
-            sidebarProvider.postMessage({ type: 'analysis-result', data: merged, refresh: true });
+            await findingsStore.save(merged, undefined, lastCoverageNote).catch(() => { /* best effort */ });
+            sidebarProvider.postMessage({ type: 'analysis-result', data: merged, coverageNote: lastCoverageNote, refresh: true });
             return;
         }
         // Results restored from a previous session: only the sidebar shows them.
@@ -105,8 +107,8 @@ export function activate(context: vscode.ExtensionContext) {
             const fingerprint = result.properties?.ctraceFingerprint;
             if (fingerprint) { result.properties = { ...result.properties, ctraceIgnored: ignoreList.has(fingerprint) }; }
         }
-        await findingsStore.save(snapshot.report, snapshot.savedAt).catch(() => { /* best effort */ });
-        sidebarProvider.postMessage({ type: 'analysis-result', data: snapshot.report, restored: true, savedAt: snapshot.savedAt, refresh: true });
+        await findingsStore.save(snapshot.report, snapshot.savedAt, snapshot.coverageNote).catch(() => { /* best effort */ });
+        sidebarProvider.postMessage({ type: 'analysis-result', data: snapshot.report, coverageNote: snapshot.coverageNote, restored: true, savedAt: snapshot.savedAt, refresh: true });
     }
     context.subscriptions.push(ignoreList.onDidChange(() => { void republishFindings(); }));
 
@@ -168,24 +170,41 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // ── Command: ctrace.runAnalysis ──────────────────────────────────────────
-    context.subscriptions.push(
-        vscode.commands.registerCommand('ctrace.runAnalysis', async (arg?: any) => {
-            if (isRunning) {
-                vscode.window.showWarningMessage('An analysis is already in progress.');
-                sidebarProvider.postMessage({ type: 'analysis-done' });
-                return;
+    async function runGuarded(run: (generatedConfigs: string[]) => Promise<void>): Promise<void> {
+        if (isRunning) {
+            vscode.window.showWarningMessage('An analysis is already in progress.');
+            return;
+        }
+        isRunning = true;
+        const generatedConfigs: string[] = [];
+        try {
+            await run(generatedConfigs);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            output.appendLine(`[ctrace] ${message}`);
+            vscode.window.showErrorMessage(message);
+            sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis failed', detail: message });
+        } finally {
+            generatedConfigs.forEach(tryDelete);
+            isRunning = false;
+            sidebarProvider.postMessage({ type: 'analysis-done' });
+            if (republishPending) {
+                republishPending = false;
+                void republishFindings();
             }
+        }
+    }
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ctrace.runAnalysis', (arg?: any) => runGuarded(async generatedConfigs => {
             if (process.platform === 'win32' && !isWslAvailable()) {
                 output.appendLine('[ctrace] Windows Subsystem for Linux (WSL) is required to run Ctrace on Windows.');
                 promptWslInstallation();
-                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
 
             if (isUpdatingBinary()) {
                 vscode.window.showWarningMessage('Ctrace is currently updating. Please wait for the download to finish before running an analysis.');
-                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
 
@@ -198,13 +217,23 @@ export function activate(context: vscode.ExtensionContext) {
             const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!workspaceRoot) {
                 vscode.window.showErrorMessage('Please open a workspace folder.');
-                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
 
             // ── Determine files to analyse ───────────────────────────────────
             let filesToAnalyze: string[];
-            const pythonEnabled = analysesLanguage(uiState, 'python');
+            const userConfig = readCtraceConfig(uiState.configFile);
+            const analyzers = effectiveAnalyzers(uiState, userConfig);
+            const cEnabled = analyzers.static || analyzers.runtime;
+            const pythonEnabled = analysesLanguage(uiState, 'python', userConfig);
+            const languages: SourceLanguage[] = [];
+            if (cEnabled) { languages.push('c'); }
+            if (pythonEnabled) { languages.push('python'); }
+            if (!languages.length) {
+                vscode.window.showWarningMessage('Select an analyzer before running an analysis.');
+                sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected' });
+                return;
+            }
 
             if (scanWorkspace) {
                 const userExclude = uiState.excludeDir
@@ -213,7 +242,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const pythonExclude = pythonEnabled ? PYTHON_EXCLUDED_DIRS.map(dir => `,**/${dir}/**`).join('') : '';
                 const excludeGlob = `{**/node_modules/**,**/.git/**,**/build/**,**/out/**,**/.cache/**,**/.vscode/**${pythonExclude}${userExclude ? ',' + userExclude : ''}}`;
 
-                const extensions = workspaceSourceExtensions(pythonEnabled ? ['c', 'python'] : ['c']);
+                const extensions = workspaceSourceExtensions(languages);
                 let includeGlob = `**/*.${extensions}`;
                 if (uiState.onlyDir) {
                     const dirs = uiState.onlyDir.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -226,8 +255,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 const uris = await vscode.workspace.findFiles(includeGlob, excludeGlob);
                 if (uris.length === 0) {
-                    vscode.window.showWarningMessage(`No ${pythonEnabled ? 'C/C++ or Python' : 'C/C++'} files found in the current workspace matching the filters.`);
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                    vscode.window.showWarningMessage(`No ${languages.map(language => language === 'c' ? 'C/C++' : 'Python').join(' or ')} files found in the current workspace matching the filters.`);
                     return;
                 }
                 filesToAnalyze = uris.map(u => u.fsPath);
@@ -237,18 +265,17 @@ export function activate(context: vscode.ExtensionContext) {
                     : vscode.window.activeTextEditor?.document.uri;
                 if (!targetUri) {
                     vscode.window.showErrorMessage('No active file to analyse.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
                     return;
                 }
                 const language = sourceLanguage(targetUri.fsPath);
                 if (targetUri.scheme !== 'file' || !language) {
                     vscode.window.showWarningMessage('Please open or focus a C/C++ (.c, .cpp, .cc, .cxx) or Python (.py) source file to analyse.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
                     return;
                 }
-                if (!analysesLanguage(uiState, language)) {
-                    vscode.window.showWarningMessage('The Python analyzer is turned off: select coretrace-python-analyzer in the Static tools menu to analyse Python files.');
-                    sidebarProvider._view?.webview.postMessage({ type: 'analysis-done' });
+                if (!languages.includes(language)) {
+                    const message = language === 'python' ? 'Select the Python analyzer to analyse this file.' : 'Select a C/C++ analyzer to analyse this file.';
+                    vscode.window.showWarningMessage(message);
+                    sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected for this file', detail: message });
                     return;
                 }
                 filesToAnalyze = [targetUri.fsPath];
@@ -268,7 +295,6 @@ export function activate(context: vscode.ExtensionContext) {
                         'Run Anyway'
                     );
                     if (action === 'Install Analyzers') {
-                        sidebarProvider.postMessage({ type: 'analysis-done' });
                         vscode.commands.executeCommand('ctrace.installDependencies');
                         return;
                     }
@@ -278,11 +304,9 @@ export function activate(context: vscode.ExtensionContext) {
             // ── Locate binary ────────────────────────────────────────────────
             const ctracePath = await locateOrError();
             if (!ctracePath) {
-                sidebarProvider.postMessage({ type: 'analysis-done' });
                 return;
             }
 
-            isRunning = true;
             sidebarProvider.postMessage({ type: 'analysis-start' });
 
             const extensionPath = context.extensionUri.fsPath;
@@ -321,6 +345,66 @@ export function activate(context: vscode.ExtensionContext) {
                 ? timeoutSeconds * 1000
                 : DEFAULT_TIMEOUT_MS;
 
+            // Dynamic analysis needs the runtime analyzer, which macOS releases
+            // do not include and each WSL distribution may lack: files that run
+            // where it is missing are analysed without it.
+            interface ScanGroup {
+                files: string[];
+                language: SourceLanguage;
+                target: ExecutionTarget;
+                skipRuntime: boolean;
+                generatedConfig?: string;
+                cacheKey?: string;
+            }
+            const groups = new Map<string, ScanGroup>();
+            const groupFor = new Map<string, ScanGroup>();
+            let skippedCount = 0;
+            for (const file of filesToAnalyze) {
+                const language = sourceLanguage(file) ?? 'c';
+                const distro = process.platform === 'win32' ? wslDistroOf(file) ?? '' : '';
+                const key = JSON.stringify([language, distro.toLowerCase()]);
+                let group = groups.get(key);
+                if (!group) {
+                    const target = executionTarget(ctracePath, file);
+                    const skipRuntime = language === 'c' && analyzers.runtime
+                        && !await isRuntimeAnalyzerAvailable(target, analyzers.runtimePath, extensionPath);
+                    group = { files: [], language, target, skipRuntime };
+                    groups.set(key, group);
+                }
+                if (group.skipRuntime) { skippedCount++; }
+                if (!group.skipRuntime || analyzers.static) {
+                    group.files.push(file);
+                    groupFor.set(file, group);
+                }
+            }
+            let coverageNote: string | undefined;
+            let dynamicNotice: string | undefined;
+            if (skippedCount > 0) {
+                const count = `${skippedCount} C/C++ file${skippedCount > 1 ? 's' : ''}`;
+                const reason = 'coretrace-runtime-analyzer cannot be found where ctrace runs (macOS releases do not include it)';
+                coverageNote = analyzers.static
+                    ? `Dynamic analysis was skipped for ${count}.`
+                    : `${count} skipped because no C/C++ analyzer was available.`;
+                if (analyzers.static) {
+                    dynamicNotice = `Dynamic analysis will be skipped for ${count}: ${reason}. The selected static tools will still run.`;
+                } else {
+                    // No tool left for them: ctrace would report a clean result without checking anything.
+                    filesToAnalyze = filesToAnalyze.filter(file => groupFor.has(file));
+                    dynamicNotice = `${count} will not be analysed: ${reason}, and no static C/C++ tool is selected.`;
+                    if (filesToAnalyze.length === 0) {
+                        output.appendLine(`[ctrace] ${dynamicNotice}`);
+                        vscode.window.showWarningMessage(dynamicNotice);
+                        sidebarProvider.postMessage({ type: 'analysis-error', message: 'No tools selected', detail: dynamicNotice });
+                        return;
+                    }
+                }
+                // The action changes the sidebar's settings, so it only helps runs started from there.
+                const actions = arg?.fromSidebar === true && !analyzers.configDynamic ? ['Turn Off Dynamic Analysis'] : [];
+                void vscode.window.showWarningMessage(dynamicNotice, ...actions).then(action => {
+                    if (action) { return sidebarProvider.disableDynamicAnalysis(); }
+                });
+            }
+
             const autoEntryPoints = uiState.autoEntryPoints === true
                 || ctraceConfig.get<boolean>('analysis.autoEntryPoints', false);
 
@@ -331,27 +415,26 @@ export function activate(context: vscode.ExtensionContext) {
                 effectiveUiState = { ...effectiveUiState, scanMode, entryPoints: symbols };
             }
 
+            const noDynamicState: CtraceUIState = { ...effectiveUiState, dynamicEnabled: false, skipRuntimeAnalyzer: true };
+            const stateFor = (group: ScanGroup) => group.skipRuntime ? noDynamicState : effectiveUiState;
+
             output.show(true);
             output.clear();
+            if (dynamicNotice) { output.appendLine(`[ctrace] ${dynamicNotice}`); }
 
             // ── Scan files ───────────────────────────────────────────────────
             // Written before anything runs: without the config, ctrace would
             // run without the requested macros, include paths or filters.
-            let scanDir: string;
-            let configPath: string;
-            let hasConfig: boolean;
-            try {
-                scanDir = prepareScanDirectory(context.globalStorageUri.fsPath);
-                configPath = createConfigPath(scanDir);
-                hasConfig = generateConfigFileIfNeeded(configPath, effectiveUiState, workspaceRoot, ctraceConfig);
-            } catch (e) {
-                const message = e instanceof Error ? e.message : String(e);
-                output.appendLine(`[ctrace] ${message}`);
-                vscode.window.showErrorMessage(message);
-                isRunning = false;
-                sidebarProvider.postMessage({ type: 'analysis-error', message: 'Analysis not started', detail: message });
-                sidebarProvider.postMessage({ type: 'analysis-done' });
-                return;
+            const scanDir = prepareScanDirectory(context.globalStorageUri.fsPath);
+            const configPath = createConfigPath(scanDir);
+            for (const group of groups.values()) {
+                if (!group.files.length) { continue; }
+                const candidate = configPath.replace(/\.json$/, `-${generatedConfigs.length}.json`);
+                if (generateConfigFileIfNeeded(candidate, stateFor(group), workspaceRoot, ctraceConfig, userConfig,
+                    file => pathInExecutionTarget(file, group.target))) {
+                    group.generatedConfig = candidate;
+                    generatedConfigs.push(candidate);
+                }
             }
 
             // ── Run with progress ────────────────────────────────────────────
@@ -366,7 +449,7 @@ export function activate(context: vscode.ExtensionContext) {
                 async (progress, token) => {
                     const allSarif: any[] = [];
                     const allStackReports: any[] = [];
-                    lastSarifByFile = new Map();
+                    const sarifByFile = new Map<string, any>();
 
                     // Clear once before the loop so workspace-mode doesn't wipe
                     // previously collected diagnostics on every file.
@@ -391,40 +474,34 @@ export function activate(context: vscode.ExtensionContext) {
                     // Reuse the results of files whose content, headers and
                     // ctrace invocation are unchanged since they were analysed.
                     const incremental = scanWorkspace && ctraceConfig.get<boolean>('workspace.incremental', true);
-                    // One key per language: a header edit must not re-analyse Python
-                    // files, nor a requirements.txt edit C files.
-                    const contextKeys: Partial<Record<SourceLanguage, string>> = {};
+                    // Cache the effective config and execution target for each language.
                     let queue: WorkspaceFile[] = filesToAnalyze.map(fsPath => ({ fsPath, hash: '' }));
                     let cachedCount = 0;
                     if (incremental) {
                         await analysisCacheReady;
-                        const placeholderState = {
-                            ...effectiveUiState,
-                            reportFile: '<report>',
-                            configFile: hasConfig ? '<config>' : effectiveUiState.configFile,
-                        };
-                        let configContent = '';
-                        try { configContent = hasConfig ? fs.readFileSync(configPath, 'utf8') : ''; } catch { /* ignore */ }
-                        const languages = [...new Set(filesToAnalyze.map(file => sourceLanguage(file) ?? 'c'))];
                         const cachedByFile = new Map<string, any>();
                         queue = [];
-                        for (const language of languages) {
-                            const key = language === 'python'
-                                ? await analysisContextKey(
-                                    [language, buildCtraceArgs(placeholderState, ctraceConfig, language), timeoutMs],
-                                    [ctracePath], PYTHON_MANIFEST_GLOB)
-                                : await analysisContextKey(
-                                    [buildCtraceArgs(placeholderState, ctraceConfig), buildStackAnalyzerArgs(placeholderState, ctraceConfig), configContent, timeoutMs],
-                                    [ctracePath, effectiveUiState.compileCommandsPath, effectiveUiState.configFile]);
-                            contextKeys[language] = key;
-                            const partition = await partitionFiles(filesToAnalyze.filter(file => (sourceLanguage(file) ?? 'c') === language), key);
+                        for (const group of groups.values()) {
+                            if (!group.files.length) { continue; }
+                            const { language, generatedConfig, target } = group;
+                            const placeholderState = { ...stateFor(group), reportFile: '<report>',
+                                configFile: generatedConfig ? '<config>' : effectiveUiState.configFile };
+                            const values: unknown[] = [language, target, buildCtraceArgs(placeholderState, ctraceConfig, language),
+                                generatedConfig ? fs.readFileSync(generatedConfig, 'utf8') : '', timeoutMs];
+                            const dependencies = [ctracePath, effectiveUiState.configFile];
+                            if (language === 'c') {
+                                values.push(buildStackAnalyzerArgs(placeholderState, ctraceConfig));
+                                dependencies.push(effectiveUiState.compileCommandsPath);
+                            }
+                            group.cacheKey = await analysisContextKey(values, dependencies, language === 'python' ? PYTHON_MANIFEST_GLOB : undefined);
+                            const partition = await partitionFiles(group.files, group.cacheKey);
                             queue.push(...partition.changed);
                             partition.cached.forEach((cached, fp) => cachedByFile.set(fp, cached));
                         }
                         cachedCount = cachedByFile.size;
                         for (const [fp, cached] of cachedByFile) {
                             allSarif.push(cached.sarif);
-                            lastSarifByFile.set(fp, cached.sarif);
+                            sarifByFile.set(fp, cached.sarif);
                             updateDiagnostics(cached.sarif, diagnosticCollection, fp, false, { isIgnored });
                             if (cached.stack && cached.stack.functions.length > 0) { publishStack(cached.stack); }
                         }
@@ -448,7 +525,9 @@ export function activate(context: vscode.ExtensionContext) {
                             }
 
                             const fp = queue[i].fsPath;
-                            const language = sourceLanguage(fp) ?? 'c';
+                            const group = groupFor.get(fp)!;
+                            const language = group.language;
+                            const configFile = group.generatedConfig ?? effectiveUiState.configFile;
                             const fileName = path.basename(fp);
                             const cachedSuffix = cachedCount > 0 ? ` (${cachedCount} unchanged)` : '';
 
@@ -468,19 +547,20 @@ export function activate(context: vscode.ExtensionContext) {
                             // Build & run command for this file.
                             const reportPath = createReportPath(scanDir);
                             const args = buildCtraceArgs({
-                                ...effectiveUiState,
+                                ...stateFor(group),
                                 reportFile: reportPath,
-                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
+                                configFile,
                             }, ctraceConfig, language);
-                            const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args));
+                            const { command, tempFiles } = await buildCommand(ctracePath, fp, shellQuoteArgs(args), false, group.target);
                             tryDelete(reportPath);
 
                             output.appendLine(`\n${'─'.repeat(60)}`);
                             output.appendLine(`[${i + 1}/${queue.length}] ${fileName}`);
                             output.appendLine(`$ ${command}`);
-                            if (hasConfig) {
+                            const runConfig = group.generatedConfig;
+                            if (runConfig) {
                                 try {
-                                    output.appendLine(`[ctrace config] ${fs.readFileSync(configPath, 'utf8').trim()}`);
+                                    output.appendLine(`[ctrace config] ${fs.readFileSync(runConfig, 'utf8').trim()}`);
                                 } catch {}
                             }
 
@@ -532,19 +612,14 @@ export function activate(context: vscode.ExtensionContext) {
                                 // In that case, run a fast dedicated stack pass (~20ms) to retrieve the call-graph & stack metrics.
                                 // The stack analyzer only reads C and C++.
                                 if (language === 'c' && (!stackReport || stackReport.functions.length === 0)) {
-                                    const isStackRequested = (
-                                        (effectiveUiState.staticEnabled !== false &&
-                                            (effectiveUiState.staticTools === undefined || effectiveUiState.staticTools.includes('ctrace_stack_analyzer'))) ||
-                                        (effectiveUiState.dynamicEnabled !== false &&
-                                            effectiveUiState.dynamicTools?.includes('ctrace_stack_analyzer'))
-                                    );
-                                    if (isStackRequested) {
+                                    const fileState = stateFor(group);
+                                    if (analyzers.stack) {
                                         try {
                                             const stackArgs = buildStackAnalyzerArgs({
-                                                ...effectiveUiState,
-                                                configFile: hasConfig ? configPath : effectiveUiState.configFile,
+                                                ...fileState,
+                                                configFile,
                                             }, ctraceConfig);
-                                            const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs));
+                                            const { command: stackCmd, tempFiles: stackTemp } = await buildCommand(ctracePath, fp, shellQuoteArgs(stackArgs), false, group.target);
                                             try {
                                                 const stackRes = await runCommand(stackCmd, extensionPath, token, timeoutMs);
                                                 const stackOut = (stackRes.stdout || '') + (stackRes.stderr || '');
@@ -568,10 +643,10 @@ export function activate(context: vscode.ExtensionContext) {
                             if (sarif) {
                                 normalizeSarifArtifactUris(sarif, fp);
                                 allSarif.push(sarif);
-                                lastSarifByFile.set(fp, sarif);
+                                sarifByFile.set(fp, sarif);
                                 updateDiagnostics(sarif, diagnosticCollection, fp, !scanWorkspace, { isIgnored });
                                 if (incremental && !killed && queue[i].hash) {
-                                    cacheFileAnalysis(queue[i], contextKeys[language] ?? '', { sarif, stack: fileStack });
+                                    cacheFileAnalysis(queue[i], group.cacheKey ?? '', { sarif, stack: fileStack });
                                 }
                             } else if (!scanWorkspace) {
                                 // Single-file mode: report parse failure immediately
@@ -605,24 +680,29 @@ export function activate(context: vscode.ExtensionContext) {
                             return;
                         }
 
+                        lastSarifByFile = sarifByFile;
+                        lastCoverageNote = coverageNote;
                         const merged = mergeSarifDocs(allSarif);
                         const total = countVisibleResults(merged);
 
                         try {
-                            await findingsStore.save(merged);
+                            await findingsStore.save(merged, undefined, coverageNote);
                         } catch (error) {
                             output.appendLine(`[ctrace] Could not save the latest findings: ${error}`);
                         }
                         sidebarProvider.postMessage({
                             type: 'analysis-result',
-                            data: merged,
+                            data: merged, coverageNote,
                         });
 
                         const filesSuffix = (scanWorkspace && filesToAnalyze.length > 1
                             ? ` across ${filesToAnalyze.length} files`
                             : '') + (cachedCount > 0 ? ` (${cachedCount} unchanged, reused from cache)` : '');
 
-                        if (total > 0) {
+                        if (coverageNote) {
+                            const issues = total ? `${total} issue${total === 1 ? '' : 's'} found` : 'no issues found by active tools';
+                            vscode.window.showWarningMessage(`Partial analysis — ${issues}${filesSuffix}. ${coverageNote}`);
+                        } else if (total > 0) {
                             vscode.window.showInformationMessage(
                                 `Analysis complete — ${total} issue${total > 1 ? 's' : ''} found${filesSuffix}.`
                             );
@@ -650,22 +730,13 @@ export function activate(context: vscode.ExtensionContext) {
                             detail: String(e),
                         });
                     } finally {
-                        if (hasConfig) {
-                            tryDelete(configPath);
-                        }
                         if (incremental) {
                             void persistAnalysisCache();
-                        }
-                        isRunning = false;
-                        sidebarProvider.postMessage({ type: 'analysis-done' });
-                        if (republishPending) {
-                            republishPending = false;
-                            void republishFindings();
                         }
                     }
                 }
             );
-        })
+        }))
     );
 
     context.subscriptions.push(
@@ -681,6 +752,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ctrace.clearAnalysisCache', async () => {
             await clearCache();
             StackManager.instance.clear();
+            lastSarifByFile.clear();
+            lastCoverageNote = undefined;
             await findingsStore.clear();
             sidebarProvider.postMessage({ type: 'clear-results' });
             vscode.window.showInformationMessage('Ctrace analysis cache and saved results cleared.');

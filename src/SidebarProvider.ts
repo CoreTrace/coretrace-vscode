@@ -1,7 +1,10 @@
+import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import { isUpdatingBinary } from "./ctrace/BinaryUpdater";
 import { StackManager } from "./ctrace/StackManager";
 import { FindingsStore } from "./ctrace/FindingsStore";
+
+const PENDING_DISABLE = "coretrace.pendingDisableDynamic";
 
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   _view?: vscode.WebviewView;
@@ -9,7 +12,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private _ready = false;
   private _pendingMessages: any[] = [];
 
-  constructor(private readonly _extensionUri: vscode.Uri, private readonly _findingsStore: FindingsStore) {}
+  constructor(private readonly _extensionUri: vscode.Uri, private readonly _findingsStore: FindingsStore,
+    private readonly _state: vscode.Memento) {}
+
+  public async disableDynamicAnalysis(): Promise<void> {
+    await this._state.update(PENDING_DISABLE, randomUUID());
+    this.deliverPendingSetting();
+  }
+
+  private deliverPendingSetting(): void {
+    const id = this._state.get<string>(PENDING_DISABLE);
+    if (id && this._view?.visible && this._ready) {
+      // A document can disappear between the visibility check and delivery.
+      void Promise.resolve(this._view.webview.postMessage({ type: 'set-dynamic-analysis', enabled: false, id }))
+        .catch(() => { /* Retry on visibility or webview-ready until acknowledged. */ });
+    }
+  }
 
   public dispose(): void {
     while (this._disposables.length) {
@@ -61,6 +79,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     // Keep it updated whenever the user switches tabs
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(postActiveFile);
     this._disposables.push(activeEditorListener);
+    webviewView.onDidChangeVisibility(() => this.deliverPendingSetting());
     webviewView.onDidDispose(() => {
       activeEditorListener.dispose();
       if (this._view === webviewView) {
@@ -73,11 +92,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       switch (data.type) {
         case "webview-ready": {
           this._ready = true;
+          this.deliverPendingSetting();
           syncBinaryStatus();
           postActiveFile(vscode.window.activeTextEditor);
           const savedFindings = this._findingsStore.get();
           if (savedFindings && !this._pendingMessages.some(message => message.type === "analysis-result" || message.type === "clear-results")) {
-            webviewView.webview.postMessage({ type: "analysis-result", data: savedFindings.report, restored: true, savedAt: savedFindings.savedAt });
+            webviewView.webview.postMessage({ type: "analysis-result", data: savedFindings.report, coverageNote: savedFindings.coverageNote, restored: true, savedAt: savedFindings.savedAt });
           }
           const latestStack = StackManager.instance.getLatestReport();
           if (latestStack && !this._pendingMessages.some(message => message.type === "stack-data")) {
@@ -85,6 +105,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           }
           for (const message of this._pendingMessages.splice(0)) {
             webviewView.webview.postMessage(message);
+          }
+          break;
+        }
+        case "dynamic-setting-saved": {
+          if (typeof data.id === "string" && data.id === this._state.get(PENDING_DISABLE)) {
+            await this._state.update(PENDING_DISABLE, undefined);
           }
           break;
         }
@@ -108,7 +134,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
                 console.warn(`[CoreTrace] Blocked unauthorized command from webview: ${data.command}`);
                 return;
             }
-            vscode.commands.executeCommand(data.command, data.params);
+            // Runs started here may change the sidebar's settings (Turn Off Dynamic Analysis).
+            const isRun = data.command === 'ctrace.runAnalysis' || data.command === 'ctrace.runWorkspaceAnalysis';
+            const params = isRun && typeof data.params === 'object' && data.params !== null && !Array.isArray(data.params)
+                ? { ...data.params, fromSidebar: true }
+                : data.params;
+            vscode.commands.executeCommand(data.command, params);
             break;
         }
         case "ignore-finding": {
@@ -519,6 +550,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
 					<!-- Results -->
 					<div id="results-container" class="results-hidden">
+              <p id="coverage-note" hidden></p>
 
             <!-- Result View Tabs -->
             <div class="results-tab-bar" role="tablist" aria-label="Analysis Results Tabs">

@@ -40,10 +40,10 @@ export interface DependencyStatus {
  */
 export function execShellCommand(
     cmd: string,
-    options: { asRoot?: boolean; distro?: string | null; onData?: (chunk: string) => void } = {}
+    options: { asRoot?: boolean; distro?: string | null; cwd?: string; onData?: (chunk: string) => void } = {}
 ): Promise<{ stdout: string; stderr: string; code: number }> {
     return new Promise((resolve) => {
-        let processName = 'sh';
+        let processName = '/bin/sh';
         let processArgs: string[] = ['-c', cmd];
 
         if (process.platform === 'win32') {
@@ -70,7 +70,7 @@ export function execShellCommand(
         delete env.GIT_OBJECT_DIRECTORY;
         delete env.GIT_PREFIX;
 
-        const child = cp.spawn(processName, processArgs, { env });
+        const child = cp.spawn(processName, processArgs, { env, cwd: options.cwd });
         if (process.platform === 'win32') {
             child.stdin?.on('error', () => { /* WSL may exit before consuming stdin */ });
             child.stdin?.end(cmd);
@@ -91,7 +91,7 @@ export function execShellCommand(
         });
 
         child.on('close', (code) => {
-            resolve({ stdout, stderr, code: code ?? 0 });
+            resolve({ stdout, stderr, code: code ?? 1 });
         });
 
         child.on('error', (err) => {

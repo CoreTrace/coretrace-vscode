@@ -54,7 +54,7 @@ suite('Run Analysis with requested settings', function () {
         await vscode.commands.executeCommand('ctrace.runAnalysis', {
             filePath: sample,
             // No static tool: the dependency check would wait for an answer.
-            uiState: { staticEnabled: false, staticTools: [], dynamicEnabled: false, dynamicTools: [], macros: 'FEATURE=1' },
+            uiState: { staticEnabled: false, staticTools: [], dynamicEnabled: false, dynamicTools: [], invokedTools: ['ctrace_stack_analyzer'], macros: 'FEATURE=1' },
         });
     }
 

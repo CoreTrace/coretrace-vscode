@@ -1377,6 +1377,8 @@ select:focus-visible {
     animation: status-pulse 1.4s ease-in-out infinite;
 }
 
+#coverage-note { color: var(--vscode-editorWarning-foreground); }
+.status-dot.warning { background: var(--vscode-editorWarning-foreground); }
 .status-dot.error { background: var(--vscode-errorForeground, #f14c4c); }
 .status-dot.success { background: var(--vscode-charts-green, #73c991); }
 

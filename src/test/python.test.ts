@@ -22,12 +22,14 @@ suite('Python analysis Test Suite', () => {
         assert.strictEqual(workspaceSourceExtensions(['c', 'python']), '{c,cpp,cc,cxx,py}');
     });
 
-    test('Python files need the Python analyzer, C files are always analysed', () => {
+    test('each input language needs a selected analyzer', () => {
         assert.strictEqual(analysesLanguage({}, 'python'), true);
         assert.strictEqual(analysesLanguage({ staticTools: ALL_STATIC }, 'python'), true);
         assert.strictEqual(analysesLanguage({ staticTools: ['cppcheck'] }, 'python'), false);
         assert.strictEqual(analysesLanguage({ staticEnabled: false }, 'python'), false);
         assert.strictEqual(analysesLanguage({ staticTools: [] }, 'c'), true);
+        assert.strictEqual(analysesLanguage({ staticTools: [], dynamicEnabled: false }, 'c'), false);
+        assert.strictEqual(workspaceSourceExtensions(['python']), 'py');
     });
 
     test('every tool selected: --static for both languages, --dyn only for C', () => {
