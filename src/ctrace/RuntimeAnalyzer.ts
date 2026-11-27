@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import { shellEscapeArg } from './CommandBuilder';
 import { execShellCommand } from './DependencyInstaller';
 
@@ -6,17 +5,6 @@ export const RUNTIME_ANALYZER = 'coretrace-runtime-analyzer';
 
 /** Where a release (`<prefix>/bin/ctrace`) puts the runtime analyzer, relative to ctrace's directory. */
 export const BUNDLED_RUNTIME_ANALYZER = `../libexec/coretrace/${RUNTIME_ANALYZER}/bin/runtime-analyzer`;
-
-/** `tools.coretrace-runtime-analyzer.path` in a ctrace configuration file, if set. */
-export function configuredRuntimeAnalyzer(configFile: string | undefined): string | undefined {
-    if (!configFile) { return undefined; }
-    try {
-        const configured = JSON.parse(fs.readFileSync(configFile, 'utf8'))?.tools?.[RUNTIME_ANALYZER]?.path;
-        return typeof configured === 'string' && configured.trim() ? configured.trim() : undefined;
-    } catch {
-        return undefined;
-    }
-}
 
 /**
  * A POSIX shell script that exits 0 when ctrace at `ctracePath` would find an
@@ -52,11 +40,4 @@ export async function isRuntimeAnalyzerAvailable(
     } catch {
         return false;
     }
-}
-
-/** Whether these sidebar settings ask for dynamic analysis. */
-export function requestsDynamicAnalysis(uiState: { dynamicEnabled?: boolean; dynamicTools?: unknown }): boolean {
-    // Like buildCtraceArgs: anything but an array means the default selection.
-    return uiState.dynamicEnabled !== false
-        && (!Array.isArray(uiState.dynamicTools) || uiState.dynamicTools.includes(RUNTIME_ANALYZER));
 }

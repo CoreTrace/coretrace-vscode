@@ -3,8 +3,8 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { generateConfigFileIfNeeded } from '../ctraceRunner';
-import { BUNDLED_RUNTIME_ANALYZER, configuredRuntimeAnalyzer, isRuntimeAnalyzerAvailable, requestsDynamicAnalysis } from '../ctrace/RuntimeAnalyzer';
+import { effectiveCAnalyzers, generateConfigFileIfNeeded, readCtraceConfig } from '../ctraceRunner';
+import { BUNDLED_RUNTIME_ANALYZER, isRuntimeAnalyzerAvailable, RUNTIME_ANALYZER } from '../ctrace/RuntimeAnalyzer';
 
 suite('Runtime analyzer detection Test Suite', () => {
     let work = '';
@@ -70,6 +70,7 @@ suite('Runtime analyzer detection Test Suite', () => {
 
     test('the configured path is read from the ctrace configuration file', () => {
         const config = path.join(work, 'config.json');
+        const configuredRuntimeAnalyzer = (file?: string) => effectiveCAnalyzers({}, readCtraceConfig(file)).runtimePath;
         assert.strictEqual(configuredRuntimeAnalyzer(undefined), undefined);
         assert.strictEqual(configuredRuntimeAnalyzer(config), undefined);
         fs.writeFileSync(config, JSON.stringify({ tools: { 'coretrace-runtime-analyzer': { path: '/opt/rt/bin/runtime-analyzer' } } }));
@@ -78,12 +79,17 @@ suite('Runtime analyzer detection Test Suite', () => {
         assert.strictEqual(configuredRuntimeAnalyzer(config), undefined);
     });
 
-    test('dynamic analysis is requested unless turned off or deselected', () => {
-        assert.strictEqual(requestsDynamicAnalysis({}), true);
-        assert.strictEqual(requestsDynamicAnalysis({ dynamicTools: ['coretrace-runtime-analyzer'] }), true);
-        assert.strictEqual(requestsDynamicAnalysis({ dynamicEnabled: false }), false);
-        assert.strictEqual(requestsDynamicAnalysis({ dynamicTools: [] }), false);
-        assert.strictEqual(requestsDynamicAnalysis({ dynamicTools: null }), true, 'like buildCtraceArgs, a non-array is the default');
+    test('preflight uses the tool flags and config precedence that ctrace uses', () => {
+        const off = { staticEnabled: false, dynamicEnabled: false };
+        assert.strictEqual(effectiveCAnalyzers({}, {}).runtime, true);
+        assert.strictEqual(effectiveCAnalyzers({ dynamicTools: [] }, {}).runtime, false);
+        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { dynamic_analysis: true } }).runtime, true);
+        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { static_analysis: true } }).static, true);
+        const config = { invoke: RUNTIME_ANALYZER };
+        assert.strictEqual(effectiveCAnalyzers(off, config).runtime, true);
+        assert.strictEqual(effectiveCAnalyzers({ ...off, invokedTools: ['cppcheck'] }, config).runtime, false);
+        assert.strictEqual(effectiveCAnalyzers(off, { ...config, analysis: { invoke: [] } }).runtime, false);
+        assert.strictEqual(effectiveCAnalyzers(off, { analysis: { invoke: 'coretrace-python-analyzer' } }).static, false);
     });
 
     test('a run without the runtime analyzer turns it off in a copy of the user config', () => {
@@ -95,6 +101,6 @@ suite('Runtime analyzer detection Test Suite', () => {
         fs.writeFileSync(user, JSON.stringify({ analysis: { invoke: 'coretrace-runtime-analyzer' } }));
         assert.strictEqual(generateConfigFileIfNeeded(run, { configFile: user }), false, 'only when asked');
         assert.strictEqual(generateConfigFileIfNeeded(run, { skipRuntimeAnalyzer: true, configFile: user }), true);
-        assert.deepStrictEqual(JSON.parse(fs.readFileSync(run, 'utf8')).analysis, { invoke: [], dynamic: false });
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(run, 'utf8')).analysis, { invoke: [] });
     });
 });

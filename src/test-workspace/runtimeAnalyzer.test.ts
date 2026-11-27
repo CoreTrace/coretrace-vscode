@@ -108,6 +108,38 @@ suite('Run Analysis and the runtime analyzer', function () {
         assert.ok(fs.readFileSync(userConfig, 'utf8').includes('"dynamic":true'), "the user's file is left as it was");
     });
 
+    test('config-only selection keeps the static scan and its config-relative paths', async () => {
+        const userConfig = path.join(work, 'config.json');
+        const userData = {
+            analysis: { dynamic_analysis: true, invoke: 'ctrace_stack_analyzer' },
+            files: { compile_commands: 'db.json' },
+            stack_analyzer: { 'buffer-model': 'models/buffers.json' },
+        };
+        fs.writeFileSync(userConfig, JSON.stringify(userData));
+        await run({ staticEnabled: false, dynamicEnabled: false, configFile: userConfig });
+        assert.ok(sarifRun(), 'the config selects a runnable C analyzer');
+        const config = JSON.parse(configs.get(sarifRun())!);
+        assert.deepStrictEqual(config.analysis, { dynamic: false, invoke: 'ctrace_stack_analyzer' });
+        assert.strictEqual(config.files.compile_commands, path.join(work, 'db.json'));
+        assert.strictEqual(config.stack_analyzer['buffer-model'], path.join(work, 'models/buffers.json'));
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(userConfig, 'utf8')), userData);
+    });
+
+    test('the static fallback keeps automatically detected entry points', async () => {
+        const point = new vscode.Position(0, 0);
+        const symbol = new vscode.DocumentSymbol('review_entry', '', vscode.SymbolKind.Function,
+            new vscode.Range(point, point), new vscode.Range(point, point));
+        const provider = vscode.languages.registerDocumentSymbolProvider({ scheme: 'file', pattern: '**/sample.c' }, {
+            provideDocumentSymbols: () => [symbol],
+        });
+        try {
+            await run({ ...dynamicOnly, staticEnabled: true, staticTools: ['ctrace_stack_analyzer'], autoEntryPoints: true });
+            assert.match(sarifRun(), /--entry-points=[^']*review_entry/);
+        } finally {
+            provider.dispose();
+        }
+    });
+
     test('in a mixed workspace, Python files still run when no C tool remains', async () => {
         await vscode.commands.executeCommand('ctrace.clearAnalysisCache');
         await vscode.commands.executeCommand('ctrace.runWorkspaceAnalysis', {
